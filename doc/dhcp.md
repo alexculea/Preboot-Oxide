@@ -1,6 +1,11 @@
 ## Quick overview of the protocol
 Using UDP, a DHCP client broadcasts to 255.255.255.255 (port 67) a DHCP `Discover` message, including various information as indicated in the `tcpdump` below. The server responds on port 68 with an `Offer`, then the client confirms the interpreted offer with a `Request` containg correct server provided information, with the server responding with an `Ack` (Acknowledge) message from the server that all is OK.
 
+It is required that the server reply matches certain IP protocol requirements:
+- The from IP has to match the BOOTP server IP in the messsage
+- The source port has to be 67 but the packet should target port 68
+- The destination IP of the packet has to be `255.255.255.255`
+
 
 ## Example DHCP Messages captured using `tcpdump` where the boot happens over the network
 
