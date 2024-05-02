@@ -10,50 +10,49 @@ use log::{debug, error, info, trace};
 use network_interface::NetworkInterface;
 use network_interface::NetworkInterfaceConfig;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::os::fd::FromRawFd;
 use std::{
     collections::HashMap,
-    convert::identity,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    time::Duration,
 };
 
 use async_std::{
-    net::{ToSocketAddrs, UdpSocket}, // 3
-    task,                            // 2
+    net::UdpSocket,
+    task,
 };
-use std::os::fd::AsRawFd;
 
 use dhcproto::v4::{
     Decodable, Decoder, DhcpOption, DhcpOptions, Encodable, Encoder, Flags, Message, MessageType,
     OptionCode,
 };
-use rand::Rng;
 
 use crate::conf::Conf;
+
+struct Session {
+    pub client_ip: Option<Ipv4Addr>,
+    pub subnet: DhcpOption,
+    pub lease_time: DhcpOption,
+}
+
+type SessionMap = HashMap<u32, Session>;
 
 type Result<T> = anyhow::Result<T, anyhow::Error>;
 
 async fn server_loop(server_config: Conf) -> Result<()> {
-    let relay_mode = false;
+    let relay_mode = true;
     let addr = if relay_mode {
-        "0.0.0.0:68"
+        "255.255.255.255:68"
     } else {
         "0.0.0.0:67"
     };
+
     let mut buf = vec![0u8; 1024];
+    // let socket2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+    // socket2.set_broadcast(true)?;
+    // socket2.bind(&addr.parse::<SocketAddr>()?.try_into()?)?;
+    // let mut socket = UdpSocket::from(Into::<std::net::UdpSocket>::into(socket2));
 
-    // Step 1: Create a socket2::Socket and set IP_DONTFRAG
-    let domain = Domain::for_address(addr.parse()?);
-    let socket_type = Type::DGRAM;
-    let protocol = Protocol::UDP;
-    let socket2 = Socket::new(domain, socket_type, Some(protocol)).unwrap();
-    // socket2.set_tos(10)?;
-    socket2.set_broadcast(true)?;
-    socket2.bind(&addr.parse::<SocketAddr>()?.try_into()?)?;
-
-    let mut socket = UdpSocket::from(Into::<std::net::UdpSocket>::into(socket2));
-    let mut sessions: HashMap<u32, u32> = Default::default();
+    let mut socket = UdpSocket::bind(addr).await?;
+    let mut sessions: SessionMap = Default::default();
 
     info!("Listening on {}.", addr.to_string());
 
@@ -69,32 +68,30 @@ async fn server_loop(server_config: Conf) -> Result<()> {
 
     loop {
         let (message_size, peer) = socket.recv_from(&mut buf).await?;
-        let msg = Message::decode(&mut Decoder::new(&buf))?;
         let _ = handle_dhcp_message(
-            msg,
             message_size,
             peer,
             &network_interfaces,
             &mut socket,
             &server_config,
             &mut sessions,
+            relay_mode,
         )
         .await
         .map_err(|e| error!("{}", e));
     }
 }
 
-// Respond to DHCP Discover with a DHCP offer
-// Handle DHCP Request of that offer by responding with a DHCP Acknowledge
 async fn handle_dhcp_message(
-    client_msg: Message,
     size: usize,
     peer: SocketAddr,
     network_interfaces: &Vec<NetworkInterface>,
     socket: &mut UdpSocket,
     server_config: &Conf,
-    sessions: &mut HashMap<u32, u32>,
-) -> Result<()> {
+    sessions: &mut SessionMap,
+    relay_mode: bool,
+) -> Result<()> {    
+    let client_msg = Message::decode(&mut Decoder::new(&buf))?;
     let opts = client_msg.opts();
     let msg_type = match opts.msg_type() {
         Some(inner) => inner,
@@ -120,21 +117,34 @@ async fn handle_dhcp_message(
     if let std::net::IpAddr::V4(ipv4) = socket.local_addr()?.ip() {
         my_ipv4 = Some(ipv4);
     }
-    let response = match msg_type {
-        MessageType::Offer | MessageType::Ack => {
-            // let main_dhcp_server_discover = relay_message_to_main_dhcp(socket.local_addr()?, &client_msg).await?;
-            // sessions.insert(main_dhcp_server_discover.xid(), client_xid);
-            async_std::task::sleep(Duration::from_millis(500)).await;
 
-            add_boot_info_to_message(
-                client_msg,
-                client_xid,
-                server_config.get_boot_file().unwrap().as_str(),
-                server_config.get_boot_server_ipv4(my_ipv4).unwrap(),
-            )
+    let response = match msg_type {
+        MessageType::Offer => {
+            sessions.insert(
+                client_msg.xid(),
+                Session {
+                    client_ip: Some(client_msg.yiaddr()),
+                    subnet: client_msg
+                        .opts()
+                        .get(OptionCode::SubnetMask)
+                        .unwrap()
+                        .clone(),
+                    lease_time: client_msg
+                        .opts()
+                        .get(OptionCode::AddressLeaseTime)
+                        .unwrap()
+                        .clone(),
+                },
+            );
+
+            let msg = apply_self_to_message(&client_msg, server_config, my_ipv4);
+            add_boot_info_to_message(&msg, server_config, my_ipv4)
         }
         MessageType::Discover => {
-            async_std::task::sleep(Duration::from_millis(500)).await;
+            if relay_mode {
+                return Ok(());
+            }
+
             make_offer_message(
                 client_xid,
                 client_msg.chaddr(),
@@ -144,25 +154,37 @@ async fn handle_dhcp_message(
             )
         }
         MessageType::Request => {
-            async_std::task::sleep(Duration::from_millis(500)).await;
-            let mut offer = make_offer_message(
-                client_xid,
-                client_msg.chaddr(),
-                "10.5.5.12".parse().unwrap(),
-                server_config.get_boot_file().unwrap().as_str(),
-                server_config.get_boot_server_ipv4(my_ipv4).unwrap(),
-            );
-            offer = add_boot_info_to_message(
-                offer,
-                client_xid,
-                server_config.get_boot_file().unwrap().as_str(),
-                server_config.get_boot_server_ipv4(my_ipv4).unwrap(),
-            );
-            let mut opts = offer.opts().clone();
-            opts.remove(OptionCode::MessageType);
+            let session = sessions.get(&client_xid).context(format!(
+                "No session state found for transaction {}. Ignoring.",
+                client_xid
+            ))?;
+
+            let mut ack = Message::default();
+            let mut opts = DhcpOptions::default();
             opts.insert(DhcpOption::MessageType(MessageType::Ack));
-            offer.set_opts(opts);
-            offer
+            opts.insert(session.subnet.clone());
+            opts.insert(session.lease_time.clone());
+
+            ack.set_flags(Flags::new(0).set_broadcast())
+                .set_yiaddr(session.client_ip.unwrap())
+                .set_opcode(Opcode::BootReply)
+                .set_opts(opts)
+                .set_xid(client_msg.xid());
+
+            ack = apply_self_to_message(&ack, server_config, my_ipv4);
+            ack = add_boot_info_to_message(&ack, server_config, my_ipv4);
+
+            ack
+        }
+        MessageType::Decline => {
+            bail!(
+                "Client {} declined the offer.",
+                client_msg
+                    .chaddr()
+                    .iter()
+                    .map(|x| format!("{:02X}", x))
+                    .collect::<String>()
+            );
         }
         _ => return Ok(()),
     };
@@ -185,7 +207,7 @@ async fn handle_dhcp_message(
         socket2.set_broadcast(true)?;
         socket2.bind_device(Some(iface.name.as_bytes()))?;
         socket2.bind(&SockAddr::from(from_addr.parse::<SocketAddrV4>()?))?;
-    
+
         let client_socket = UdpSocket::from(Into::<std::net::UdpSocket>::into(socket2));
         client_socket.send_to(&buf, to_addr).await?;
         debug!(
@@ -205,7 +227,6 @@ async fn handle_dhcp_message(
     // client_socket.connect(to_addr).await?;
     // client_socket.send(&buf).await?;
 
-
     Ok(())
 }
 
@@ -219,13 +240,11 @@ fn matches_filter(msg: &Message) -> bool {
 
     let matches = (!has_boot_file_name && is_offer) | is_discover | is_request | is_ack;
     if !matches {
-        trace!(
+        debug!(
             "DHCP message ignored due to not matching filter. \
-            Required: has_boot_file_name, is_discover, is_request.\
-            State: {}, {}, {}",
-            has_boot_file_name,
-            is_discover,
-            is_request
+            Required: has_boot_file_name: {}, is_discover: {}, is_request: {}\
+            is_offer: {}, is_ack: {}",
+            has_boot_file_name, is_discover, is_request, is_offer, is_ack
         );
     }
 
@@ -234,51 +253,58 @@ fn matches_filter(msg: &Message) -> bool {
     matches
 }
 
-async fn relay_message_to_main_dhcp(from: impl ToSocketAddrs, msg: &Message) -> Result<Message> {
-    let mut encoder_buff = vec![0u8; 256];
-    let mut decoder_buff = vec![0u8; 256];
-
-    let mut encoder = Encoder::new(&mut encoder_buff);
-
-    let mut discover_msg = msg.clone();
-    discover_msg.set_xid(rand::thread_rng().gen());
-
-    let mut addr = from.to_socket_addrs().await?.next().unwrap();
-    addr.set_port(0);
-
-    let socket = UdpSocket::bind(addr).await?;
-    socket.set_broadcast(true)?;
-    socket.connect("255.255.255:68").await?;
-
-    discover_msg.encode(&mut encoder)?;
-
-    trace!("Relaying message to the main DHCP server.");
-    socket.send(&encoder_buff).await?;
-    trace!("Message relayed to the main DHCP server.");
-
-    socket.recv(&mut decoder_buff).await?;
-    let mut decoder = Decoder::new(&mut decoder_buff);
-    let response = Message::decode(&mut decoder)?;
-
-    trace!("Message received from main DHCP server.");
-    Ok(response)
+fn socket2_to_async_std(socket: Socket) -> UdpSocket {
+    let std_socket = Into::<std::net::UdpSocket>::into(socket);
+    UdpSocket::from(std_socket)
 }
 
-fn add_boot_info_to_message(
-    msg: Message,
-    xid: u32,
-    boot_filename: &str,
-    tfpt_srv_addr: Ipv4Addr,
-) -> Message {
+fn async_socket_to_socket2(socket: UdpSocket) -> Result<Socket> {
+    let std_socket = std::net::UdpSocket::try_from(socket)?;
+    Ok(Socket::from(std_socket))
+}
+
+// async fn relay_message_to_main_dhcp(from: impl ToSocketAddrs, msg: &Message) -> Result<Message> {
+//     let mut encoder_buff = vec![0u8; 256];
+//     let mut decoder_buff = vec![0u8; 256];
+
+//     let mut encoder = Encoder::new(&mut encoder_buff);
+
+//     let mut discover_msg = msg.clone();
+//     discover_msg.set_xid(rand::thread_rng().gen());
+
+//     let mut addr = from.to_socket_addrs().await?.next().unwrap();
+//     addr.set_port(0);
+
+//     let socket = UdpSocket::bind(addr).await?;
+//     socket.set_broadcast(true)?;
+//     socket.connect("255.255.255:68").await?;
+
+//     discover_msg.encode(&mut encoder)?;
+
+//     trace!("Relaying message to the main DHCP server.");
+//     socket.send(&encoder_buff).await?;
+//     trace!("Message relayed to the main DHCP server.");
+
+//     socket.recv(&mut decoder_buff).await?;
+//     let mut decoder = Decoder::new(&mut decoder_buff);
+//     let response = Message::decode(&mut decoder)?;
+
+//     trace!("Message received from main DHCP server.");
+//     Ok(response)
+// }
+
+fn add_boot_info_to_message(msg: &Message, config: &Conf, my_ipv4: Option<Ipv4Addr>) -> Message {
     let mut res = msg.clone();
     let mut opts = msg.opts().clone();
+
+    let boot_filename = config.get_boot_file().unwrap();
+    let tfpt_srv_addr = config.get_boot_server_ipv4(my_ipv4).unwrap();
 
     opts.insert(DhcpOption::BootfileName(boot_filename.as_bytes().to_vec()));
     opts.insert(DhcpOption::TFTPServerAddress(tfpt_srv_addr));
     opts.insert(DhcpOption::ServerIdentifier(tfpt_srv_addr));
 
-    res.set_xid(xid)
-        .set_siaddr(tfpt_srv_addr)
+    res.set_siaddr(tfpt_srv_addr)
         .set_fname_str(boot_filename)
         .set_opts(opts);
 
@@ -296,8 +322,8 @@ fn make_offer_message(
     let mut opts = DhcpOptions::default();
     let flags = Flags::new(0).set_broadcast();
 
-    //opts.insert(DhcpOption::BootfileName(boot_filename.as_bytes().to_vec()));
-    //opts.insert(DhcpOption::TFTPServerAddress(tfpt_srv_addr));
+    opts.insert(DhcpOption::BootfileName(boot_filename.as_bytes().to_vec()));
+    opts.insert(DhcpOption::TFTPServerAddress(tfpt_srv_addr));
     opts.insert(DhcpOption::MessageType(MessageType::Offer));
     opts.insert(DhcpOption::ServerIdentifier(tfpt_srv_addr));
     opts.insert(DhcpOption::SubnetMask("255.255.255.0".parse().unwrap()));
@@ -315,16 +341,17 @@ fn make_offer_message(
     res
 }
 
-// fn make_ack_message(xid: u32) -> Message {
-//     let mut res = Message::default();
-//     let mut opts = DhcpOptions::default();
-//     opts.insert(DhcpOption::MessageType(MessageType::Offer));
+fn apply_self_to_message(msg: &Message, conf: &Conf, my_ipv4: Option<Ipv4Addr>) -> Message {
+    let mut res = msg.clone();
+    let mut opts = msg.opts().clone();
 
-//     res.set_xid(xid);
-//     res.set_opts(opts);
+    let tfpt_srv_addr = conf.get_boot_server_ipv4(my_ipv4).unwrap();
+    opts.insert(DhcpOption::ServerIdentifier(tfpt_srv_addr));
 
-//     res
-// }
+    res.set_siaddr(tfpt_srv_addr).set_opts(opts);
+
+    res
+}
 
 fn main() -> Result<()> {
     let mut dot_env_path = std::env::current_exe().unwrap_or_default();
