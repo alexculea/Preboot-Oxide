@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::{Ipv4Addr, Ipv6Addr}};
 use anyhow::Result;
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct Conf {
   mac_boot_file: HashMap<String, String>,
   boot_file: Option<String>,

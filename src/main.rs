@@ -5,19 +5,32 @@ mod util;
 extern crate anyhow;
 
 use anyhow::{Context, Ok};
+use async_std::prelude::FutureExt;
+use async_std::sync::Mutex;
+use async_std::task::sleep;
+use async_std::{net::UdpSocket, task};
 use dhcproto::v4::Opcode;
 use log::{debug, error, info, trace};
 use network_interface::NetworkInterface;
 use network_interface::NetworkInterfaceConfig;
+use polling::AsRawSource;
+use polling::AsSource;
+use polling::Events;
+use polling::{Event, Poller};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::future::Future;
+use std::net::UdpSocket as StdUdpSocket;
+use std::os::fd::AsFd;
+use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
+use std::os::fd::FromRawFd;
+use std::os::fd::IntoRawFd;
+use std::os::fd::OwnedFd;
+use std::os::fd::RawFd;
+use std::sync::Arc;
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-};
-
-use async_std::{
-    net::UdpSocket,
-    task,
 };
 
 use dhcproto::v4::{
@@ -38,60 +51,92 @@ type SessionMap = HashMap<u32, Session>;
 type Result<T> = anyhow::Result<T, anyhow::Error>;
 
 async fn server_loop(server_config: Conf) -> Result<()> {
-    let relay_mode = true;
-    let addr = if relay_mode {
-        "255.255.255.255:68"
-    } else {
-        "0.0.0.0:67"
-    };
-
-    let mut buf = vec![0u8; 1024];
-    // let socket2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
-    // socket2.set_broadcast(true)?;
-    // socket2.bind(&addr.parse::<SocketAddr>()?.try_into()?)?;
-    // let mut socket = UdpSocket::from(Into::<std::net::UdpSocket>::into(socket2));
-
-    let mut socket = UdpSocket::bind(addr).await?;
-    let mut sessions: SessionMap = Default::default();
-
-    info!("Listening on {}.", addr.to_string());
-
+    let listen_ips = ["0.0.0.0:67", "255.255.255.255:68"];
+    let sessions: Arc<Mutex<SessionMap>> = Arc::new(Mutex::new(Default::default()));
     let network_interfaces = NetworkInterface::show().unwrap();
-    for itf in network_interfaces.iter() {
-        debug!(
-            "Interface: {}:{} - broadcast: {}",
-            itf.name,
-            itf.addr[0].ip().to_string(),
-            itf.addr[0].broadcast().unwrap().to_string()
-        );
-    }
+    let sockets2: Vec<Socket> = network_interfaces
+        .iter()
+        .map(|itf| {
+            listen_ips
+                .iter()
+                .map(|ip| {
+                    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+                    socket.set_broadcast(true)?;
+                    socket.bind_device(Some(itf.name.as_bytes()))?;
+                    socket.bind(&SockAddr::from(ip.parse::<SocketAddrV4>()?))?;
 
+                    info!("Listening on IP {ip} on device {}", itf.name);
+                    Ok(socket)
+                })
+                .collect::<Result<Vec<Socket>>>()
+        })
+        .collect::<Result<Vec<Vec<Socket>>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+
+    let sockets: Vec<UdpSocket> = sockets2
+        .into_iter()
+        .map(|socket| socket2_to_async_std(socket))
+        .collect();
+    let sockets = Arc::new(sockets);
+
+    let poller = Poller::new().context("Setting up OS polling")?;
+    sockets
+        .iter()
+        .enumerate()
+        .map(|(index, socket)| {
+            // SAFETY: sources have to be deleted before the poller is dropped
+            unsafe { poller.add(socket, polling::Event::readable(index)) }
+        })
+        .collect::<std::io::Result<()>>()?;
+
+    let mut events = Events::new();
     loop {
-        let (message_size, peer) = socket.recv_from(&mut buf).await?;
-        let _ = handle_dhcp_message(
-            message_size,
-            peer,
-            &network_interfaces,
-            &mut socket,
-            &server_config,
-            &mut sessions,
-            relay_mode,
-        )
-        .await
-        .map_err(|e| error!("{}", e));
+        let _ = poller.wait(&mut events, None)?;
+        sockets
+            .iter()
+            .enumerate()
+            .map(|(index, socket)| {
+                unsafe {
+                    // SAFETY: The resource pointed to by fd must remain open for the duration of the returned BorrowedFd, and it must not have the value -1.
+                    let fd = BorrowedFd::borrow_raw(socket.as_raw_fd());
+
+                    // SAFETY: sources have to be deleted before the poller is dropped
+                    poller.modify(fd, polling::Event::readable(index))
+                }
+            })
+            .collect::<std::io::Result<()>>()?;
+
+        for event in events.iter() {
+            let mut buf = vec![0u8; 1024];
+            let task_sockets = Arc::clone(&sockets);
+            let (bytes_read, peer) = task_sockets[event.key].recv_from(&mut buf).await?;
+            if bytes_read == 0 {
+                continue;
+            }
+
+            let sessions = sessions.clone();
+            let server_config = server_config.clone();
+            task::spawn(async move {
+                let _ = handle_dhcp_message(buf, peer, task_sockets, &server_config, sessions)
+                    .await
+                    .map_err(|e| error!("{}", e));
+            });
+        }
+
+        events.clear();
     }
 }
 
 async fn handle_dhcp_message(
-    size: usize,
+    rcv_data: Vec<u8>,
     peer: SocketAddr,
-    network_interfaces: &Vec<NetworkInterface>,
-    socket: &mut UdpSocket,
+    server_sockets: Arc<Vec<UdpSocket>>,
     server_config: &Conf,
-    sessions: &mut SessionMap,
-    relay_mode: bool,
-) -> Result<()> {    
-    let client_msg = Message::decode(&mut Decoder::new(&buf))?;
+    sessions: Arc<Mutex<SessionMap>>,
+) -> Result<()> {
+    let client_msg = Message::decode(&mut Decoder::new(&rcv_data))?;
     let opts = client_msg.opts();
     let msg_type = match opts.msg_type() {
         Some(inner) => inner,
@@ -99,8 +144,7 @@ async fn handle_dhcp_message(
     };
 
     debug!(
-        "Received {} from IP: {}, port: {}, DHCP Msg: {:?}",
-        size,
+        "Received from IP: {}, port: {}, DHCP Msg: {:?}",
         peer.ip(),
         peer.port(),
         msg_type
@@ -113,14 +157,10 @@ async fn handle_dhcp_message(
     }
 
     let client_xid = client_msg.xid();
-    let mut my_ipv4 = None;
-    if let std::net::IpAddr::V4(ipv4) = socket.local_addr()?.ip() {
-        my_ipv4 = Some(ipv4);
-    }
 
     let response = match msg_type {
         MessageType::Offer => {
-            sessions.insert(
+            sessions.lock().await.insert(
                 client_msg.xid(),
                 Session {
                     client_ip: Some(client_msg.yiaddr()),
@@ -137,23 +177,11 @@ async fn handle_dhcp_message(
                 },
             );
 
-            let msg = apply_self_to_message(&client_msg, server_config, my_ipv4);
-            add_boot_info_to_message(&msg, server_config, my_ipv4)
-        }
-        MessageType::Discover => {
-            if relay_mode {
-                return Ok(());
-            }
-
-            make_offer_message(
-                client_xid,
-                client_msg.chaddr(),
-                "10.5.5.12".parse().unwrap(),
-                server_config.get_boot_file().unwrap().as_str(),
-                server_config.get_boot_server_ipv4(my_ipv4).unwrap(),
-            )
+            let msg = apply_self_to_message(&client_msg, server_config, None);
+            add_boot_info_to_message(&msg, server_config, None)
         }
         MessageType::Request => {
+            let sessions = sessions.lock().await;
             let session = sessions.get(&client_xid).context(format!(
                 "No session state found for transaction {}. Ignoring.",
                 client_xid
@@ -170,9 +198,10 @@ async fn handle_dhcp_message(
                 .set_opcode(Opcode::BootReply)
                 .set_opts(opts)
                 .set_xid(client_msg.xid());
+            drop(sessions);
 
-            ack = apply_self_to_message(&ack, server_config, my_ipv4);
-            ack = add_boot_info_to_message(&ack, server_config, my_ipv4);
+            ack = apply_self_to_message(&ack, server_config, None);
+            ack = add_boot_info_to_message(&ack, server_config, None);
 
             ack
         }
@@ -196,30 +225,14 @@ async fn handle_dhcp_message(
 
     trace!("Responding with message: {}", response.to_string());
 
-    let mut local_addr = socket.local_addr()?;
-    local_addr.set_port(0);
-
-    *socket = UdpSocket::bind(&local_addr).await?;
-
-    for iface in network_interfaces.iter() {
-        let from_addr = format!("{}:67", iface.addr[0].ip().to_string());
-        let socket2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-        socket2.set_broadcast(true)?;
-        socket2.bind_device(Some(iface.name.as_bytes()))?;
-        socket2.bind(&SockAddr::from(from_addr.parse::<SocketAddrV4>()?))?;
-
-        let client_socket = UdpSocket::from(Into::<std::net::UdpSocket>::into(socket2));
-        client_socket.send_to(&buf, to_addr).await?;
+    for socket in server_sockets.iter() {
+        socket.send_to(&buf, to_addr).await?;
         debug!(
-            "DHCP reply on {} ({:?}) sent to: {}",
-            iface.name,
+            "DHCP reply ({:?}) sent to: {}",
             response.opts().get(OptionCode::MessageType).unwrap(),
             to_addr
         );
     }
-
-    local_addr.set_port(67);
-    *socket = UdpSocket::bind(&local_addr).await?;
 
     // let client_socket = UdpSocket::bind(to_addr).await?;
     // let client_socket = UdpSocket::bind(to_addr).await?;
@@ -227,24 +240,23 @@ async fn handle_dhcp_message(
     // client_socket.connect(to_addr).await?;
     // client_socket.send(&buf).await?;
 
+    trace!("Worker, about to exit.");
     Ok(())
 }
 
 fn matches_filter(msg: &Message) -> bool {
     let msg_opts = msg.opts();
     let has_boot_file_name = msg_opts.get(OptionCode::BootfileName).is_some();
-    let is_discover = msg_opts.has_msg_type(MessageType::Discover);
     let is_request = msg_opts.has_msg_type(MessageType::Request);
     let is_offer = msg_opts.has_msg_type(MessageType::Offer);
     let is_ack = msg_opts.has_msg_type(MessageType::Ack);
 
-    let matches = (!has_boot_file_name && is_offer) | is_discover | is_request | is_ack;
+    let matches = (!has_boot_file_name && is_offer) | is_request | is_ack;
     if !matches {
         debug!(
             "DHCP message ignored due to not matching filter. \
-            Required: has_boot_file_name: {}, is_discover: {}, is_request: {}\
-            is_offer: {}, is_ack: {}",
-            has_boot_file_name, is_discover, is_request, is_offer, is_ack
+            Required: has_boot_file_name: {has_boot_file_name}, is_request: {is_request}\
+            is_offer: {is_offer}, is_ack: {is_ack}"
         );
     }
 
@@ -360,7 +372,9 @@ fn main() -> Result<()> {
     let _ = dotenv::from_path(dot_env_path);
     let log_level = std::env::var("PXE_DHCP_LOG_LEVEL").unwrap_or("error".into());
 
-    env_logger::builder().parse_filters(&log_level).init();
+    pretty_env_logger::formatted_timed_builder()
+        .parse_filters(&log_level)
+        .init();
 
     let server_config = Conf::from_proccess_env()?;
     server_config.validate()?;
