@@ -3,6 +3,24 @@
 version = 3
 
 [[package]]
+name = "Preboot-Oxide"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-std",
+ "dhcproto",
+ "dotenv",
+ "env_logger",
+ "futures",
+ "log",
+ "network-interface",
+ "polling 3.7.0",
+ "pretty_env_logger",
+ "rand",
+ "socket2 0.5.7",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -759,24 +777,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75cb1540fadbd5b8fbccc4dddad2734eba435053f725621c070711a14bb5f4b8"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "pxe-dhcp-rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-std",
- "dhcproto",
- "dotenv",
- "env_logger",
- "futures",
- "log",
- "network-interface",
- "polling 3.7.0",
- "pretty_env_logger",
- "rand",
- "socket2 0.5.7",
 ]
 
 [[package]]
