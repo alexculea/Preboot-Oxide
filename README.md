@@ -3,13 +3,13 @@
 <img src="assets/logo.webp" height="96" style="border-radius: 96px" />
 
 PXE boot server for networks where a DHCP server already exists and should be kept separate.
-This tool currently takes care of the DHCP part of the PXE network [booting process](https://en.wikipedia.org/wiki/Preboot_Execution_Environment]). It does not handle the TFPT service, a separate tool is required for TFTP.
+This tool currently takes care of the DHCP part of the PXE network [booting process](https://en.wikipedia.org/wiki/Preboot_Execution_Environment]). It does not handle the TFTP service, a separate tool is required for TFTP.
 
 ## Use cases
   - Quickly boot OSes from the network without having to use USB drives
   - Automate OS installs for a large number of devices
 
-Highlightts include:
+Highlights include:
   - facilitates easy & simple setup to get network booting working
   - compatible with **an existing authoritative DHCP server** on the same network
   - excellent maintenability and memory safety due to being written in Rust
@@ -82,7 +82,7 @@ echo "$content" > ./target/release/.env
 ### Supported ENV variables
 
  - `PO_SERVER_IPV4`: IPv4 of the running & TFTP boot server.
- - `PO_BOOT_FILE`: Path to the boot image on the TFTP server
+ - `PO_BOOT_FILE`: Path to the boot image on the TFTP server. Relative to your TFTP server, often seen as `pxelinux.0` or `folder/path/to-it.efi`
  - `PO_LOG_LEVEL`
     
     Allows setting log level to Preboot Oxide and its dependencies. The supported levels are: error, warn, info, debug, trace. Example: `PO_LOG_LEVEL=Preboot_Oxide=trace`, for even more verbose output: `PO_LOG_LEVEL=trace`. Default: `error`.
