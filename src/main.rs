@@ -5,28 +5,17 @@ mod util;
 extern crate anyhow;
 
 use anyhow::{Context, Ok};
-use async_std::prelude::FutureExt;
 use async_std::sync::Mutex;
-use async_std::task::sleep;
 use async_std::{net::UdpSocket, task};
 use dhcproto::v4::Opcode;
 use log::{debug, error, info, trace};
 use network_interface::NetworkInterface;
 use network_interface::NetworkInterfaceConfig;
-use polling::AsRawSource;
-use polling::AsSource;
 use polling::Events;
-use polling::{Event, Poller};
+use polling::Poller;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::future::Future;
-use std::net::UdpSocket as StdUdpSocket;
-use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
 use std::os::fd::BorrowedFd;
-use std::os::fd::FromRawFd;
-use std::os::fd::IntoRawFd;
-use std::os::fd::OwnedFd;
-use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::{
     collections::HashMap,
@@ -56,6 +45,12 @@ async fn server_loop(server_config: Conf) -> Result<()> {
     let network_interfaces = NetworkInterface::show().unwrap();
     let sockets2: Vec<Socket> = network_interfaces
         .iter()
+        .filter(|iface| {
+            server_config
+                .get_ifaces()
+                .map(|ifaces| ifaces.contains(&iface.name))
+                .unwrap_or(true)
+        })
         .map(|itf| {
             listen_ips
                 .iter()
@@ -234,12 +229,6 @@ async fn handle_dhcp_message(
         );
     }
 
-    // let client_socket = UdpSocket::bind(to_addr).await?;
-    // let client_socket = UdpSocket::bind(to_addr).await?;
-    // client_socket.set_broadcast(true)?;
-    // client_socket.connect(to_addr).await?;
-    // client_socket.send(&buf).await?;
-
     trace!("Worker, about to exit.");
     Ok(())
 }
@@ -270,41 +259,6 @@ fn socket2_to_async_std(socket: Socket) -> UdpSocket {
     UdpSocket::from(std_socket)
 }
 
-fn async_socket_to_socket2(socket: UdpSocket) -> Result<Socket> {
-    let std_socket = std::net::UdpSocket::try_from(socket)?;
-    Ok(Socket::from(std_socket))
-}
-
-// async fn relay_message_to_main_dhcp(from: impl ToSocketAddrs, msg: &Message) -> Result<Message> {
-//     let mut encoder_buff = vec![0u8; 256];
-//     let mut decoder_buff = vec![0u8; 256];
-
-//     let mut encoder = Encoder::new(&mut encoder_buff);
-
-//     let mut discover_msg = msg.clone();
-//     discover_msg.set_xid(rand::thread_rng().gen());
-
-//     let mut addr = from.to_socket_addrs().await?.next().unwrap();
-//     addr.set_port(0);
-
-//     let socket = UdpSocket::bind(addr).await?;
-//     socket.set_broadcast(true)?;
-//     socket.connect("255.255.255:68").await?;
-
-//     discover_msg.encode(&mut encoder)?;
-
-//     trace!("Relaying message to the main DHCP server.");
-//     socket.send(&encoder_buff).await?;
-//     trace!("Message relayed to the main DHCP server.");
-
-//     socket.recv(&mut decoder_buff).await?;
-//     let mut decoder = Decoder::new(&mut decoder_buff);
-//     let response = Message::decode(&mut decoder)?;
-
-//     trace!("Message received from main DHCP server.");
-//     Ok(response)
-// }
-
 fn add_boot_info_to_message(msg: &Message, config: &Conf, my_ipv4: Option<Ipv4Addr>) -> Message {
     let mut res = msg.clone();
     let mut opts = msg.opts().clone();
@@ -321,36 +275,6 @@ fn add_boot_info_to_message(msg: &Message, config: &Conf, my_ipv4: Option<Ipv4Ad
         .set_opts(opts);
 
     return res;
-}
-
-fn make_offer_message(
-    xid: u32,
-    chaddr: &[u8],
-    yip: Ipv4Addr,
-    boot_filename: &str,
-    tfpt_srv_addr: Ipv4Addr,
-) -> Message {
-    let mut res = Message::default();
-    let mut opts = DhcpOptions::default();
-    let flags = Flags::new(0).set_broadcast();
-
-    opts.insert(DhcpOption::BootfileName(boot_filename.as_bytes().to_vec()));
-    opts.insert(DhcpOption::TFTPServerAddress(tfpt_srv_addr));
-    opts.insert(DhcpOption::MessageType(MessageType::Offer));
-    opts.insert(DhcpOption::ServerIdentifier(tfpt_srv_addr));
-    opts.insert(DhcpOption::SubnetMask("255.255.255.0".parse().unwrap()));
-    opts.insert(DhcpOption::AddressLeaseTime(30 * 60));
-
-    res.set_xid(xid)
-        .set_yiaddr(yip)
-        .set_fname_str(boot_filename)
-        .set_siaddr(tfpt_srv_addr)
-        .set_flags(flags)
-        .set_chaddr(chaddr)
-        .set_opcode(Opcode::BootReply)
-        .set_opts(opts);
-
-    res
 }
 
 fn apply_self_to_message(msg: &Message, conf: &Conf, my_ipv4: Option<Ipv4Addr>) -> Message {
@@ -370,7 +294,8 @@ fn main() -> Result<()> {
     dot_env_path.set_file_name(".env");
 
     let _ = dotenv::from_path(dot_env_path);
-    let log_level = std::env::var("PXE_DHCP_LOG_LEVEL").unwrap_or("error".into());
+    let env_prefix = crate::conf::ENV_VAR_PREFIX;
+    let log_level = std::env::var(format!("{env_prefix}LOG_LEVEL")).unwrap_or("error".into());
 
     pretty_env_logger::formatted_timed_builder()
         .parse_filters(&log_level)
@@ -380,29 +305,8 @@ fn main() -> Result<()> {
     server_config.validate()?;
 
     let result =
-        task::block_on(server_loop(server_config)).context(format!("Setting up network socket"));
+        task::block_on(server_loop(server_config)).context(format!("Setting up network sockets"));
 
     debug!("Exiting");
     result
 }
-
-// use socket2::{Domain, Type, Protocol, Socket};
-// use std::net::SocketAddr;
-// use async_std::net::UdpSocket;
-
-// // Step 1: Create a socket2::Socket and set IP_DONTFRAG
-// let domain = Domain::ipv4();
-// let type_ = Type::dgram();
-// let protocol = Protocol::udp();
-// let socket = Socket::new(domain, type_, Some(protocol)).unwrap();
-// socket.set_ip_dontfrag(true).unwrap();
-
-// // Step 2: Convert into a std::net::UdpSocket
-// let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-// socket.bind(&addr.into()).unwrap();
-// let std_socket = socket.into_udp_socket();
-
-// // Step 3: Convert into an async_std::net::UdpSocket
-// let async_socket = UdpSocket::from(std_socket);
-
-// // Now you can use async_socket with the DF flag set
