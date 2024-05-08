@@ -85,7 +85,7 @@ echo "$content" > ./target/release/.env
  - `PO_BOOT_FILE`: Path to the boot image on the TFTP server
  - `PO_LOG_LEVEL`
     
-    Allows setting log level to Preboot Oxide and its dependencies. The supported levels are: error, warn, info, debug, trace. Example: `PO_LOG_LEVEL=Preboot-Oxide=trace`. Default: `error`.
+    Allows setting log level to Preboot Oxide and its dependencies. The supported levels are: error, warn, info, debug, trace. Example: `PO_LOG_LEVEL=Preboot_Oxide=trace`, for even more verbose output: `PO_LOG_LEVEL=trace`. Default: `error`.
  - `PO_IFACES`: Comma separated names of the network interfaces the program should listen on. Example: `PO_IFACES=enp0s3,enp0s8`. Unless specified, it will listen on all network interfaces.
 
 
