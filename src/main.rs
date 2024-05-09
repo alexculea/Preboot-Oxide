@@ -128,7 +128,7 @@ async fn handle_dhcp_message(
     sessions: Arc<Mutex<SessionMap>>,
 ) -> Result<()> {
     let receiving_socket = &server_sockets[receiving_socket_index];
-    let mut rcv_data = vec![0u8; 256];
+    let mut rcv_data = [0u8; 576]; // https://www.rfc-editor.org/rfc/rfc1122, 3.3.3 Fragmentation
     let (bytes_read, peer) = receiving_socket.recv_from(&mut rcv_data).await?;
     if bytes_read == 0 {
         return Ok(());
