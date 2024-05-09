@@ -4,27 +4,25 @@ mod util;
 #[macro_use]
 extern crate anyhow;
 
-use anyhow::{Context, Ok};
-use async_std::sync::Mutex;
-use async_std::{net::UdpSocket, task};
-use dhcproto::v4::Opcode;
-use log::{debug, error, info, trace};
-use network_interface::NetworkInterface;
-use network_interface::NetworkInterfaceConfig;
-use polling::Events;
-use polling::Poller;
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::os::fd::AsRawFd;
-use std::os::fd::BorrowedFd;
-use std::sync::Arc;
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddrV4},
+    os::fd::{AsRawFd,  BorrowedFd},
+    sync::Arc,
 };
 
+use async_std::sync::Mutex;
+use async_std::{net::UdpSocket, task};
+
+use log::{debug, error, info, trace};
+use anyhow::{Context, Ok};
+
+use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+use polling::{Events, Poller};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use dhcproto::v4::{
     Decodable, Decoder, DhcpOption, DhcpOptions, Encodable, Encoder, Flags, Message, MessageType,
-    OptionCode,
+    OptionCode, Opcode
 };
 
 use crate::conf::Conf;
@@ -39,42 +37,47 @@ type SessionMap = HashMap<u32, Session>;
 
 type Result<T> = anyhow::Result<T, anyhow::Error>;
 
+type SocketVec2DRes = Result<Vec<Vec<Socket>>>;
+
 async fn server_loop(server_config: Conf) -> Result<()> {
     let listen_ips = ["0.0.0.0:67", "255.255.255.255:68"];
-    let sessions: Arc<Mutex<SessionMap>> = Arc::new(Mutex::new(Default::default()));
-    let network_interfaces = NetworkInterface::show().unwrap();
-    let sockets2: Vec<Socket> = network_interfaces
-        .iter()
-        .filter(|iface| {
-            server_config
-                .get_ifaces()
-                .map(|ifaces| ifaces.contains(&iface.name))
-                .unwrap_or(true)
-        })
-        .map(|itf| {
-            listen_ips
-                .iter()
-                .map(|ip| {
-                    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-                    socket.set_broadcast(true)?;
-                    socket.bind_device(Some(itf.name.as_bytes()))?;
-                    socket.bind(&SockAddr::from(ip.parse::<SocketAddrV4>()?))?;
+    let sessions = Arc::new(Mutex::new(Default::default()));
+    let network_interfaces = NetworkInterface::show().context("Listing network interfaces")?;
+    let sockets: Arc<Vec<UdpSocket>> = Arc::new(
+        network_interfaces
+            .iter()
+            .filter(|iface| {
+                // only listen on the configured network interfaces
+                server_config
+                    .get_ifaces()
+                    .map(|ifaces| ifaces.contains(&iface.name))
+                    .unwrap_or(true) // or on all if no interfaces are configured
+            })
+            .map(|iface| {
+                listen_ips
+                    .iter()
+                    .map(|ip| {
+                        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+                        socket.set_broadcast(true)?;
+                        socket
+                            .bind_device(Some(iface.name.as_bytes()))
+                            .context(format!("Binding socket to network device: {}", iface.name))?;
+                        socket
+                            .bind(&SockAddr::from(ip.parse::<SocketAddrV4>()?))
+                            .context(format!("Binding socket to {ip} on network device: {}", iface.name))?;
 
-                    info!("Listening on IP {ip} on device {}", itf.name);
-                    Ok(socket)
-                })
-                .collect::<Result<Vec<Socket>>>()
-        })
-        .collect::<Result<Vec<Vec<Socket>>>>()?
-        .into_iter()
-        .flatten()
-        .collect();
-
-    let sockets: Vec<UdpSocket> = sockets2
-        .into_iter()
-        .map(|socket| socket2_to_async_std(socket))
-        .collect();
-    let sockets = Arc::new(sockets);
+                        info!("Listening on IP {ip} on device {}", iface.name);
+                        Ok(socket)
+                    })
+                    .collect()
+            })
+            .collect::<SocketVec2DRes>()
+            .context("Setting up network sockets on devices.")?
+            .into_iter()
+            .flatten()
+            .map(|socket| socket2_to_async_std(socket))
+            .collect()
+    );
 
     let poller = Poller::new().context("Setting up OS polling")?;
     sockets
@@ -132,11 +135,9 @@ async fn handle_dhcp_message(
     }
 
     let client_msg = Message::decode(&mut Decoder::new(&rcv_data))?;
+    let client_xid = client_msg.xid();
     let opts = client_msg.opts();
-    let msg_type = match opts.msg_type() {
-        Some(inner) => inner,
-        None => bail!("Can't get DHCP message type"),
-    };
+    let msg_type = opts.msg_type().context("No message type found")?;
 
     debug!(
         "Received from IP: {}, port: {}, DHCP Msg: {:?}",
@@ -147,11 +148,8 @@ async fn handle_dhcp_message(
     trace!("{}", client_msg.to_string());
 
     if !matches_filter(&client_msg) {
-        debug!("Ignoring DHCP request.");
         return Ok(());
     }
-
-    let client_xid = client_msg.xid();
 
     let response = match msg_type {
         MessageType::Offer => {
@@ -229,7 +227,6 @@ async fn handle_dhcp_message(
         );
     }
 
-    trace!("Worker, about to exit.");
     Ok(())
 }
 
