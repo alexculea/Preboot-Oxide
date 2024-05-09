@@ -6,6 +6,7 @@ pub struct Conf {
     boot_file: Option<String>,
     boot_server_ipv4: Option<Ipv4Addr>,
     ifaces: Option<Vec<String>>,
+    tftp_path: Option<String>
 }
 
 pub const ENV_VAR_PREFIX: &str = "PO_";
@@ -24,17 +25,19 @@ impl Conf {
 
     pub fn from_proccess_env() -> Result<Self> {
         let boot_server_ipv4: Option<Ipv4Addr> =
-            std::env::var(format!("{ENV_VAR_PREFIX}SERVER_IPV4"))
+            std::env::var(format!("{ENV_VAR_PREFIX}TFTP_SERVER_IPV4"))
                 .unwrap_or_default()
                 .parse()
                 .ok();
         let boot_file = std::env::var(format!("{ENV_VAR_PREFIX}BOOT_FILE")).ok();
+        let tftp_path = std::env::var(format!("{ENV_VAR_PREFIX}TFTP_SERVER_DIR_PATH")).ok();
         let ifaces_csv = std::env::var(format!("{ENV_VAR_PREFIX}IFACES")).ok();
         let ifaces = ifaces_csv.map(|csv| csv.split(",").map(|s| s.to_string()).collect());
 
         Ok(Self {
             boot_server_ipv4,
-            boot_file,
+            boot_file,            
+            tftp_path,
             ifaces,
         })
     }
@@ -53,5 +56,9 @@ impl Conf {
 
     pub fn get_ifaces(&self) -> Option<&Vec<String>> {
         self.ifaces.as_ref()
+    }
+
+    pub fn get_tftp_path(&self) -> Option<String> {
+        self.tftp_path.clone()
     }
 }

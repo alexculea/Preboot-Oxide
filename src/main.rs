@@ -7,23 +7,25 @@ extern crate anyhow;
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddrV4},
-    os::fd::{AsRawFd,  BorrowedFd},
+    os::fd::{AsRawFd, BorrowedFd},
     sync::Arc,
 };
 
 use async_std::sync::Mutex;
 use async_std::{net::UdpSocket, task};
 
-use log::{debug, error, info, trace};
 use anyhow::{Context, Ok};
+use log::{debug, error, info, trace};
 
+use dhcproto::v4::{
+    Decodable, Decoder, DhcpOption, DhcpOptions, Encodable, Encoder, Flags, Message, MessageType,
+    Opcode, OptionCode,
+};
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use polling::{Events, Poller};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use dhcproto::v4::{
-    Decodable, Decoder, DhcpOption, DhcpOptions, Encodable, Encoder, Flags, Message, MessageType,
-    OptionCode, Opcode
-};
+
+use async_tftp::server::TftpServerBuilder;
 
 use crate::conf::Conf;
 
@@ -39,7 +41,7 @@ type Result<T> = anyhow::Result<T, anyhow::Error>;
 
 type SocketVec2DRes = Result<Vec<Vec<Socket>>>;
 
-async fn server_loop(server_config: Conf) -> Result<()> {
+async fn dhcp_server_loop(server_config: Conf) -> Result<()> {
     let listen_ips = ["0.0.0.0:67", "255.255.255.255:68"];
     let sessions = Arc::new(Mutex::new(Default::default()));
     let network_interfaces = NetworkInterface::show().context("Listing network interfaces")?;
@@ -64,7 +66,10 @@ async fn server_loop(server_config: Conf) -> Result<()> {
                             .context(format!("Binding socket to network device: {}", iface.name))?;
                         socket
                             .bind(&SockAddr::from(ip.parse::<SocketAddrV4>()?))
-                            .context(format!("Binding socket to {ip} on network device: {}", iface.name))?;
+                            .context(format!(
+                                "Binding socket to {ip} on network device: {}",
+                                iface.name
+                            ))?;
 
                         info!("Listening on IP {ip} on device {}", iface.name);
                         Ok(socket)
@@ -76,7 +81,7 @@ async fn server_loop(server_config: Conf) -> Result<()> {
             .into_iter()
             .flatten()
             .map(|socket| socket2_to_async_std(socket))
-            .collect()
+            .collect(),
     );
 
     let poller = Poller::new().context("Setting up OS polling")?;
@@ -112,9 +117,15 @@ async fn server_loop(server_config: Conf) -> Result<()> {
             let server_config = server_config.clone();
             let network_interfaces = network_interfaces.clone();
             task::spawn(async move {
-                let _ = handle_dhcp_message(event.key, task_sockets, network_interfaces, &server_config, sessions)
-                    .await
-                    .map_err(|e| error!("{}", e));
+                let _ = handle_dhcp_message(
+                    event.key,
+                    task_sockets,
+                    network_interfaces,
+                    &server_config,
+                    sessions,
+                )
+                .await
+                .map_err(|e| error!("{}", e));
             });
         }
 
@@ -146,11 +157,13 @@ async fn handle_dhcp_message(
         .map(|addr| match addr {
             Addr::V4(ipv4) => ipv4.ip,
             _ => unreachable!(),
-        
         })
         .collect::<Vec<Ipv4Addr>>()
         .first()
-        .context(format!("No IPv4 address found on interface {}", receiving_interface.name))?
+        .context(format!(
+            "No IPv4 address found on interface {}",
+            receiving_interface.name
+        ))?
         .clone();
 
     let client_msg = Message::decode(&mut Decoder::new(&rcv_data))?;
@@ -317,8 +330,23 @@ fn main() -> Result<()> {
     let server_config = Conf::from_proccess_env()?;
     server_config.validate()?;
 
-    let result =
-        task::block_on(server_loop(server_config)).context(format!("Setting up network sockets"));
+    if let Some(tftp_path) = server_config.get_tftp_path() {
+        let tftp_dir = tftp_path.clone();
+        task::spawn(async {
+            let tftpd = TftpServerBuilder::with_dir_ro(tftp_path)
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            tftpd.serve().await.unwrap();
+        });
+        info!("TFTP server started on path: {}", tftp_dir);
+    } else {
+        info!("TFTP server not started, no path configured.");
+    }
+
+    let result = task::block_on(dhcp_server_loop(server_config))
+        .context(format!("Setting up network sockets"));
 
     debug!("Exiting");
     result
