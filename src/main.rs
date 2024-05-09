@@ -19,7 +19,7 @@ use std::os::fd::BorrowedFd;
 use std::sync::Arc;
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddrV4},
 };
 
 use dhcproto::v4::{
@@ -104,17 +104,11 @@ async fn server_loop(server_config: Conf) -> Result<()> {
             .collect::<std::io::Result<()>>()?;
 
         for event in events.iter() {
-            let mut buf = vec![0u8; 1024];
             let task_sockets = Arc::clone(&sockets);
-            let (bytes_read, peer) = task_sockets[event.key].recv_from(&mut buf).await?;
-            if bytes_read == 0 {
-                continue;
-            }
-
             let sessions = sessions.clone();
             let server_config = server_config.clone();
             task::spawn(async move {
-                let _ = handle_dhcp_message(buf, peer, task_sockets, &server_config, sessions)
+                let _ = handle_dhcp_message(event.key, task_sockets, &server_config, sessions)
                     .await
                     .map_err(|e| error!("{}", e));
             });
@@ -125,12 +119,18 @@ async fn server_loop(server_config: Conf) -> Result<()> {
 }
 
 async fn handle_dhcp_message(
-    rcv_data: Vec<u8>,
-    peer: SocketAddr,
+    receiving_socket_index: usize,
     server_sockets: Arc<Vec<UdpSocket>>,
     server_config: &Conf,
     sessions: Arc<Mutex<SessionMap>>,
 ) -> Result<()> {
+    let receiving_socket = &server_sockets[receiving_socket_index];
+    let mut rcv_data = vec![0u8; 256];
+    let (bytes_read, peer) = receiving_socket.recv_from(&mut rcv_data).await?;
+    if bytes_read == 0 {
+        return Ok(());
+    }
+
     let client_msg = Message::decode(&mut Decoder::new(&rcv_data))?;
     let opts = client_msg.opts();
     let msg_type = match opts.msg_type() {
