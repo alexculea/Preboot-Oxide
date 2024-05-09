@@ -19,10 +19,6 @@ impl Conf {
         if self.boot_file.is_none() {
             bail!("No path to the boot file was configured.")
         }
-
-        if self.boot_server_ipv4.is_none() {
-            bail!("No self IPv4 was configured")
-        }
         Ok(())
     }
 
@@ -47,11 +43,11 @@ impl Conf {
         self.boot_file.clone()
     }
 
-    pub fn get_boot_server_ipv4(&self, self_ip_v4: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+    pub fn get_boot_server_ipv4(&self, self_ip_v4: Option<&Ipv4Addr>) -> Option<Ipv4Addr> {
         if self.boot_server_ipv4.is_some() {
             return self.boot_server_ipv4;
         } else {
-            return self_ip_v4;
+            return self_ip_v4.copied();
         }
     }
 

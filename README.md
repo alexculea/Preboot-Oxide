@@ -22,7 +22,6 @@ Early stage - not recommended for critical or large scale use. The tool was was 
 
 ### Known issues or limitations
 - No IPv6 support
-- Needs to run at the same IP as the TFTP server.
 - Requires elevated access to listen on privileged ports 67 & 68
 - Requires a separate DHCP server as it is designed specifically for PXE boots and not for *usual* DHCP operation
 - Lacks OS service configuration
@@ -81,12 +80,12 @@ echo "$content" > ./target/release/.env
 
 ### Supported ENV variables
 
- - `PO_SERVER_IPV4`: IPv4 of the running & TFTP boot server.
- - `PO_BOOT_FILE`: Path to the boot image on the TFTP server. Relative to your TFTP server, often seen as `pxelinux.0` or `folder/path/to-it.efi`
+ - `PO_SERVER_IPV4`: IPv4 of the running & TFTP boot server. Optional, if not specified, it's assumed that the TFTP server is at the same address as Preboot-Oxide.
+ - `PO_BOOT_FILE`: Path to the boot image on the TFTP server. Relative to your TFTP server, often seen as `pxelinux.0` or `folder/path/to-it.efi`. Parameter is required.
  - `PO_LOG_LEVEL`
     
     Allows setting log level to Preboot Oxide and its dependencies. The supported levels are: error, warn, info, debug, trace. Example: `PO_LOG_LEVEL=Preboot_Oxide=trace`, for even more verbose output: `PO_LOG_LEVEL=trace`. Default: `error`.
- - `PO_IFACES`: Comma separated names of the network interfaces the program should listen on. Example: `PO_IFACES=enp0s3,enp0s8`. Unless specified, it will listen on all network interfaces.
+ - `PO_IFACES`: Comma separated names of the network interfaces the program should listen on. Example: `PO_IFACES=enp0s3,enp0s8`. Optional, unless specified, it will listen on all network interfaces.
 
 
 ### Development notes

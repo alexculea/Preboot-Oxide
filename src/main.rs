@@ -17,7 +17,7 @@ use async_std::{net::UdpSocket, task};
 use log::{debug, error, info, trace};
 use anyhow::{Context, Ok};
 
-use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use polling::{Events, Poller};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use dhcproto::v4::{
@@ -110,8 +110,9 @@ async fn server_loop(server_config: Conf) -> Result<()> {
             let task_sockets = Arc::clone(&sockets);
             let sessions = sessions.clone();
             let server_config = server_config.clone();
+            let network_interfaces = network_interfaces.clone();
             task::spawn(async move {
-                let _ = handle_dhcp_message(event.key, task_sockets, &server_config, sessions)
+                let _ = handle_dhcp_message(event.key, task_sockets, network_interfaces, &server_config, sessions)
                     .await
                     .map_err(|e| error!("{}", e));
             });
@@ -123,16 +124,34 @@ async fn server_loop(server_config: Conf) -> Result<()> {
 
 async fn handle_dhcp_message(
     receiving_socket_index: usize,
-    server_sockets: Arc<Vec<UdpSocket>>,
+    sockets: Arc<Vec<UdpSocket>>,
+    network_interfaces: Vec<NetworkInterface>,
     server_config: &Conf,
     sessions: Arc<Mutex<SessionMap>>,
 ) -> Result<()> {
-    let receiving_socket = &server_sockets[receiving_socket_index];
+    let receiving_socket = &sockets[receiving_socket_index];
     let mut rcv_data = [0u8; 576]; // https://www.rfc-editor.org/rfc/rfc1122, 3.3.3 Fragmentation
     let (bytes_read, peer) = receiving_socket.recv_from(&mut rcv_data).await?;
     if bytes_read == 0 {
         return Ok(());
     }
+
+    let receiving_interface_index = (receiving_socket_index / 2) as usize; // 2 sockets per interface
+    let receiving_interface = &network_interfaces[receiving_interface_index];
+    let self_ipv4: Ipv4Addr = receiving_interface
+        .addr
+        .iter()
+        .filter(|addr| addr.ip().is_ipv4())
+        .take(1)
+        .map(|addr| match addr {
+            Addr::V4(ipv4) => ipv4.ip,
+            _ => unreachable!(),
+        
+        })
+        .collect::<Vec<Ipv4Addr>>()
+        .first()
+        .context(format!("No IPv4 address found on interface {}", receiving_interface.name))?
+        .clone();
 
     let client_msg = Message::decode(&mut Decoder::new(&rcv_data))?;
     let client_xid = client_msg.xid();
@@ -170,7 +189,7 @@ async fn handle_dhcp_message(
                 },
             );
 
-            let msg = apply_self_to_message(&client_msg, server_config, None);
+            let msg = apply_self_to_message(&client_msg, &self_ipv4);
             add_boot_info_to_message(&msg, server_config, None)
         }
         MessageType::Request => {
@@ -193,8 +212,8 @@ async fn handle_dhcp_message(
                 .set_xid(client_msg.xid());
             drop(sessions);
 
-            ack = apply_self_to_message(&ack, server_config, None);
-            ack = add_boot_info_to_message(&ack, server_config, None);
+            ack = apply_self_to_message(&ack, &self_ipv4);
+            ack = add_boot_info_to_message(&ack, server_config, Some(&self_ipv4));
 
             ack
         }
@@ -218,7 +237,7 @@ async fn handle_dhcp_message(
 
     trace!("Responding with message: {}", response.to_string());
 
-    for socket in server_sockets.iter() {
+    for socket in sockets.iter() {
         socket.send_to(&buf, to_addr).await?;
         debug!(
             "DHCP reply ({:?}) sent to: {}",
@@ -256,7 +275,7 @@ fn socket2_to_async_std(socket: Socket) -> UdpSocket {
     UdpSocket::from(std_socket)
 }
 
-fn add_boot_info_to_message(msg: &Message, config: &Conf, my_ipv4: Option<Ipv4Addr>) -> Message {
+fn add_boot_info_to_message(msg: &Message, config: &Conf, my_ipv4: Option<&Ipv4Addr>) -> Message {
     let mut res = msg.clone();
     let mut opts = msg.opts().clone();
 
@@ -274,14 +293,11 @@ fn add_boot_info_to_message(msg: &Message, config: &Conf, my_ipv4: Option<Ipv4Ad
     return res;
 }
 
-fn apply_self_to_message(msg: &Message, conf: &Conf, my_ipv4: Option<Ipv4Addr>) -> Message {
+fn apply_self_to_message(msg: &Message, my_ipv4: &Ipv4Addr) -> Message {
     let mut res = msg.clone();
     let mut opts = msg.opts().clone();
-
-    let tfpt_srv_addr = conf.get_boot_server_ipv4(my_ipv4).unwrap();
-    opts.insert(DhcpOption::ServerIdentifier(tfpt_srv_addr));
-
-    res.set_siaddr(tfpt_srv_addr).set_opts(opts);
+    opts.insert(DhcpOption::ServerIdentifier(my_ipv4.clone()));
+    res.set_siaddr(my_ipv4.clone()).set_opts(opts);
 
     res
 }
