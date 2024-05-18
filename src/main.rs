@@ -4,6 +4,9 @@ mod util;
 #[macro_use]
 extern crate anyhow;
 
+#[macro_use]
+extern crate phf;
+
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddrV4},
@@ -15,6 +18,7 @@ use async_std::sync::Mutex;
 use async_std::{net::UdpSocket, task};
 
 use anyhow::{Context, Ok};
+use conf::MacAddress;
 use log::{debug, error, info, trace};
 
 use dhcproto::v4::{
@@ -26,8 +30,9 @@ use polling::{Events, Poller};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use async_tftp::server::TftpServerBuilder;
+use util::bytes_to_mac_address;
 
-use crate::conf::Conf;
+use crate::conf::{Conf, ProcessEnvConf};
 
 struct Session {
     pub client_ip: Option<Ipv4Addr>,
@@ -37,7 +42,7 @@ struct Session {
 
 type SessionMap = HashMap<u32, Session>;
 
-type Result<T> = anyhow::Result<T, anyhow::Error>;
+pub type Result<T> = anyhow::Result<T, anyhow::Error>;
 
 type SocketVec2DRes = Result<Vec<Vec<Socket>>>;
 
@@ -177,11 +182,16 @@ async fn handle_dhcp_message(
         peer.port(),
         msg_type
     );
-    trace!("{}", client_msg.to_string());
+    trace!("{:#?}", client_msg);
 
     if !matches_filter(&client_msg) {
         return Ok(());
     }
+
+    let client_mac_address = client_msg
+        .chaddr()
+        .first_chunk()
+        .ok_or(anyhow!("The client MAC address does not fit the size requirements of exactly 6 bytes."))?;
 
     let response = match msg_type {
         MessageType::Offer => {
@@ -203,7 +213,7 @@ async fn handle_dhcp_message(
             );
 
             let msg = apply_self_to_message(&client_msg, &self_ipv4);
-            add_boot_info_to_message(&msg, server_config, None)
+            add_boot_info_to_message(&msg, server_config, client_mac_address, Some(&self_ipv4))?
         }
         MessageType::Request => {
             let sessions = sessions.lock().await;
@@ -222,11 +232,12 @@ async fn handle_dhcp_message(
                 .set_yiaddr(session.client_ip.unwrap())
                 .set_opcode(Opcode::BootReply)
                 .set_opts(opts)
+                .set_chaddr(client_mac_address)
                 .set_xid(client_msg.xid());
             drop(sessions);
 
             ack = apply_self_to_message(&ack, &self_ipv4);
-            ack = add_boot_info_to_message(&ack, server_config, Some(&self_ipv4));
+            ack = add_boot_info_to_message(&ack, server_config, client_mac_address, Some(&self_ipv4))?;
 
             ack
         }
@@ -248,7 +259,7 @@ async fn handle_dhcp_message(
     let mut e = Encoder::new(&mut buf);
     response.encode(&mut e)?;
 
-    trace!("Responding with message: {}", response.to_string());
+    trace!("Responding with message: {:#?}", response);
 
     for socket in sockets.iter() {
         socket.send_to(&buf, to_addr).await?;
@@ -288,12 +299,23 @@ fn socket2_to_async_std(socket: Socket) -> UdpSocket {
     UdpSocket::from(std_socket)
 }
 
-fn add_boot_info_to_message(msg: &Message, config: &Conf, my_ipv4: Option<&Ipv4Addr>) -> Message {
+fn add_boot_info_to_message(
+    msg: &Message,
+    config: &Conf,
+    client: &MacAddress,
+    my_ipv4: Option<&Ipv4Addr>,
+) -> Result<Message> {
     let mut res = msg.clone();
     let mut opts = msg.opts().clone();
 
-    let boot_filename = config.get_boot_file().unwrap();
-    let tfpt_srv_addr = config.get_boot_server_ipv4(my_ipv4).unwrap();
+    let boot_filename = config.get_boot_file(client).ok_or(anyhow!(
+        "Cannot determine boot file path for client having MAC address: {}.",
+        bytes_to_mac_address(client)
+    ))?;
+    let tfpt_srv_addr = config.get_boot_server_ipv4(my_ipv4, client).ok_or(anyhow!(
+        "Cannot determine TFTP server IPv4 address for client having MAC address: {}",
+        bytes_to_mac_address(client)
+    ))?;
 
     opts.insert(DhcpOption::BootfileName(boot_filename.as_bytes().to_vec()));
     opts.insert(DhcpOption::TFTPServerAddress(tfpt_srv_addr));
@@ -303,7 +325,7 @@ fn add_boot_info_to_message(msg: &Message, config: &Conf, my_ipv4: Option<&Ipv4A
         .set_fname_str(boot_filename)
         .set_opts(opts);
 
-    return res;
+    return Ok(res);
 }
 
 fn apply_self_to_message(msg: &Message, my_ipv4: &Ipv4Addr) -> Message {
@@ -327,10 +349,13 @@ fn main() -> Result<()> {
         .parse_filters(&log_level)
         .init();
 
-    let server_config = Conf::from_proccess_env()?;
+    let server_config = Conf::from_yaml_config(None).unwrap_or_else(|e| {
+        info!("Not loading YAML configuration: {}", e.to_string());
+        Conf::from(ProcessEnvConf::from_proccess_env())
+    });
     server_config.validate()?;
 
-    if let Some(tftp_path) = server_config.get_tftp_path() {
+    if let Some(tftp_path) = server_config.get_tftp_serve_path() {
         let tftp_dir = tftp_path.clone();
         task::spawn(async {
             let tftpd = TftpServerBuilder::with_dir_ro(tftp_path)

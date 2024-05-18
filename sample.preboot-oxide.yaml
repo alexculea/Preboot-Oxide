@@ -1,0 +1,26 @@
+# this file should go in ~/.config/preboot-oxide/preboot-oxide.yaml
+# if given, this will overwrite the configuration passed via environment variables
+
+ifaces:
+  - enp0s3
+  - enp0s8
+# list of network interface names where to listen
+
+tftp_server_dir: /where/the/boot/files/are
+# if given, the TFTP service will be started and serve this path
+# if not given, it is expected that a boot_server_ipv4 is given instead
+
+# this section defines the boot file and server to be used by all clients
+# if a mac address is given in the by_mac_address section, it will override these settings
+default:
+  boot_file: /the/boot/file.efi
+  # boot_server_ipv4: 192.168.0.152
+  # optionally use an external TFTP boot server
+
+# it is possible to override the defaults by matching the booting client MAC
+# either boot file or boot server are optional and if not given they'll be taken from the default
+by_mac_address:
+  00:0c:29:3e:3b:3e:
+    boot_file: debian-installer/amd64/bootnetx64.efi
+    boot_server_ipv4: 192.168.0.152
+
