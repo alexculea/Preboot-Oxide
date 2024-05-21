@@ -25,7 +25,6 @@ Early stage - not recommended for critical or large scale use. Was was tested to
 - No IPv6 support
 - Requires elevated access to listen on privileged ports 67, 68 and 69
 - Requires a separate DHCP server as it is designed specifically for PXE boots and not for *usual* DHCP operation
-- It will conflict with DHCP servers and clients on the same machine**
 - Lacks OS service configuration
 - There's a DOS vulnerability where a flood of DHCP `OFFER` without follow up `ACK` will cause the process to fill the system memory.
 
@@ -119,5 +118,3 @@ lldb-server platform --server --listen 127.0.0.1:12345
 
 ## Footnotes
 *: Using unattended install setups it is possible to customize any aspect of the OS install such that all installs are reproducible.
-
-**: As both the OS DHCP client and Preboot-Oxide need port 68, the client operation has to be interrupted to start the boot server. This should be fine in most scenarios if the network was already configured and the DHCP client can be stopped safely - however long term effects could include network disconnection if the network configuration is changed while the DHCP client is off or if the boot server was configured as a service, it could interfere in raising up the networks due to an erroring client. One possible workaround is to ensure that the network is up first, then stop the client and then start the server. This should allow both functions normally for the duration of the IP lease. A fully compatible solution is still being researched for Debian, to submit a proposal please don't hesitate to open an issue.

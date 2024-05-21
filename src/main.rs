@@ -69,6 +69,8 @@ async fn dhcp_server_loop(server_config: Conf) -> Result<()> {
                         socket
                             .bind_device(Some(iface.name.as_bytes()))
                             .context(format!("Binding socket to network device: {}", iface.name))?;
+                        socket.set_reuse_port(true)?;
+                        socket.set_reuse_address(true)?;
                         socket
                             .bind(&SockAddr::from(ip.parse::<SocketAddrV4>()?))
                             .context(format!(
