@@ -1,0 +1,6 @@
+#!/bin/sh
+
+echo "Stopping & disabling service"
+systemctl stop preboot-oxide > /dev/null 2>&1
+systemctl disable preboot-oxide > /dev/null 2>&1
+systemctl daemon-reload

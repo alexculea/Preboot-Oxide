@@ -28,6 +28,4 @@ while IFS= read -r commit; do
 done <<< "$commits"
 
 # Output the version number
-echo "$major.$minor.$patch"
-
-# [[ 'fix!: test'  =~ fix ]] && echo "yes"
+printf "$major.$minor.$patch"
