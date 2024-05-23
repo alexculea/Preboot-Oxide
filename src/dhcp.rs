@@ -117,6 +117,8 @@ fn start_session_cleaner(active_sessions: Arc<RwLock<SessionMap>>) {
             drop(sessions); // unlock the RwLock
                             // would have been dropped anyway at the end of the loop
                             // but best to keep awareness of this happing to avoid deadlocks
+            
+            trace!("Session cleaner removed {} timed out sessions.", items_to_remove.len());
         }
     });
 }
@@ -256,7 +258,7 @@ async fn handle_dhcp_message(
             let sessions = sessions.read().await;
             let session = sessions.get(&client_xid);
             if session.is_none() {
-                info!("No session found for client having XID: {}", client_xid)
+                info!("No session found for client having XID: {}", client_xid);
                 return Ok(())
             }
             let session = session.unwrap();
