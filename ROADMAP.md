@@ -7,4 +7,5 @@ Unordered list of features planned:
 - Add support for configuring OS boot archive over HTTP
 - Ensure process ENV variables take precedence over YAML configuration
 - Good coverage of automated integration testing
+- Allow configuring listen interfaces for the TFTP service
 
