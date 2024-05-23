@@ -239,22 +239,16 @@ async fn handle_dhcp_message(
 
           ack
       }
-      MessageType::Decline => {
-          bail!(
-              "Client {} declined the offer.",
-              client_msg
-                  .chaddr()
-                  .iter()
-                  .map(|x| format!("{:02X}", x))
-                  .collect::<String>()
-          );
-      }
-      MessageType::Ack => {
+      MessageType::Decline | MessageType::Ack => {
         let mut sessions = sessions.write().await;
         sessions.remove(&client_xid);
         drop(sessions);
 
-        return Ok(())
+        return if msg_type == MessageType::Decline {
+            bail!("Client {} declined REQUEST.", bytes_to_mac_address(client_msg.chaddr()))
+        } else {
+            Ok(())
+        };
       }
       _ => return Ok(()),
   };
