@@ -5,7 +5,7 @@ use std::{
   sync::Arc,
 };
 
-use async_std::sync::Mutex;
+use async_std::sync::RwLock;
 use async_std::{net::UdpSocket, task};
 use log::{debug, info, trace, error};
 use anyhow::{Context, Ok};
@@ -33,7 +33,7 @@ type SocketVec2DRes = Result<Vec<Vec<Socket>>>;
 
 pub async fn server_loop(server_config: Conf) -> Result<()> {
   let listen_ips = ["0.0.0.0:67", "255.255.255.255:68"];
-  let sessions = Arc::new(Mutex::new(Default::default()));
+  let sessions = Arc::new(RwLock::new(Default::default()));
   let network_interfaces = NetworkInterface::show().context("Listing network interfaces")?;
   let sockets: Arc<Vec<UdpSocket>> = Arc::new(
       network_interfaces
@@ -130,7 +130,7 @@ async fn handle_dhcp_message(
   sockets: Arc<Vec<UdpSocket>>,
   network_interfaces: Vec<NetworkInterface>,
   server_config: &Conf,
-  sessions: Arc<Mutex<SessionMap>>,
+  sessions: Arc<RwLock<SessionMap>>,
 ) -> Result<()> {
   let receiving_socket = &sockets[receiving_socket_index];
   let mut rcv_data = [0u8; 576]; // https://www.rfc-editor.org/rfc/rfc1122, 3.3.3 Fragmentation
@@ -182,7 +182,7 @@ async fn handle_dhcp_message(
 
   let response = match msg_type {
       MessageType::Offer => {
-          sessions.lock().await.insert(
+          sessions.write().await.insert(
               client_msg.xid(),
               Session {
                   client_ip: Some(client_msg.yiaddr()),
@@ -203,7 +203,7 @@ async fn handle_dhcp_message(
           add_boot_info_to_message(&msg, server_config, client_mac_address, Some(&self_ipv4))?
       }
       MessageType::Request => {
-          let sessions = sessions.lock().await;
+          let sessions = sessions.read().await;
           let session = sessions.get(&client_xid).context(format!(
               "No session state found for transaction {}. Ignoring.",
               client_xid
@@ -239,7 +239,7 @@ async fn handle_dhcp_message(
           );
       }
       MessageType::Ack => {
-        let mut sessions = sessions.lock().await;
+        let mut sessions = sessions.write().await;
         sessions.remove(&client_xid);
         drop(sessions);
 
