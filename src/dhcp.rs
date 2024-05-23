@@ -254,10 +254,12 @@ async fn handle_dhcp_message(
         }
         MessageType::Request => {
             let sessions = sessions.read().await;
-            let session = sessions.get(&client_xid).context(format!(
-                "No session state found for transaction {}. Ignoring.",
-                client_xid
-            ))?;
+            let session = sessions.get(&client_xid);
+            if session.is_none() {
+                info!("No session found for client having XID: {}", client_xid)
+                return Ok(())
+            }
+            let session = session.unwrap();
 
             let mut ack = Message::default();
             let mut opts = DhcpOptions::default();
