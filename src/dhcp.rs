@@ -238,6 +238,13 @@ async fn handle_dhcp_message(
                   .collect::<String>()
           );
       }
+      MessageType::Ack => {
+        let mut sessions = sessions.lock().await;
+        sessions.remove(&client_xid);
+        drop(sessions);
+
+        return Ok(())
+      }
       _ => return Ok(()),
   };
 
