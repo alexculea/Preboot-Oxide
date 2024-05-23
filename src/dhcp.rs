@@ -2,7 +2,7 @@ use std::{
   collections::HashMap,
   net::{Ipv4Addr, SocketAddrV4},
   os::fd::{AsRawFd, BorrowedFd},
-  sync::Arc,
+  sync::Arc, time::Duration,
 };
 
 use async_std::sync::RwLock;
@@ -26,6 +26,7 @@ struct Session {
   pub client_ip: Option<Ipv4Addr>,
   pub subnet: DhcpOption,
   pub lease_time: DhcpOption,
+  pub start_time: std::time::SystemTime,
 }
 
 type SessionMap = HashMap<u32, Session>;
@@ -59,6 +60,8 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
           .collect(),
   );
 
+  start_session_cleaner(Arc::clone(&sessions));
+
   let poller = IOPoller::new().context("Setting up OS IO polling.")?;
   enlist_sockets_for_events(&poller, &sockets)?;
 
@@ -88,6 +91,37 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
       events.clear();
   }
 }
+
+fn start_session_cleaner(active_sessions: Arc<RwLock<SessionMap>>) {
+  task::spawn(async move {
+      loop {
+          task::sleep(Duration::from_secs(60)).await;
+          let now = std::time::SystemTime::now();
+          let mut items_to_remove = Vec::with_capacity(50);
+          let sessions = active_sessions.read().await;
+          for (_, (client_xid, session)) in sessions.iter().enumerate() {
+            if let Some(age) = now.duration_since(session.start_time).ok() {
+                if age > Duration::from_secs(120) {
+                    items_to_remove.push(client_xid);
+                }
+            }
+          }
+
+          if items_to_remove.is_empty() {
+              continue;
+          }
+
+          let mut sessions = active_sessions.write().await;
+          sessions.retain(|client_xid, _| {
+            !items_to_remove.contains(&client_xid)
+          });
+          drop(sessions); // unlock the RwLock
+          // would have been dropped anyway at the end of the loop
+          // but best to keep awareness of this happing to avoid deadlocks
+      }
+  });
+}
+
 fn enlist_sockets_for_events(poller: &IOPoller, sockets: &Arc<Vec<UdpSocket>>) -> Result<()> {
     sockets
         .iter()
@@ -193,9 +227,16 @@ async fn handle_dhcp_message(
 
   let response = match msg_type {
       MessageType::Offer => {
-          sessions.write().await.insert(
+          let mut sessions = sessions.write().await;
+          let max_sessions = server_config.get_max_sessions();
+          if u64::try_from(sessions.len())? > max_sessions {
+              bail!("Max sessions of {max_sessions} reached. Ignoring.")
+          }
+
+          sessions.insert(
               client_msg.xid(),
               Session {
+                  start_time: std::time::SystemTime::now(),
                   client_ip: Some(client_msg.yiaddr()),
                   subnet: client_msg
                       .opts()

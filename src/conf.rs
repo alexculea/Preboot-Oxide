@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::{
     collections::HashMap,
     io::Read,
@@ -14,13 +14,14 @@ pub type MacAddress = [u8; 6];
 pub type MacAddressConfigMap = HashMap<MacAddress, Option<ConfEntry>>;
 pub type ArchConfigMap = HashMap<u16, ConfEntry>;
 
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Conf {
     default: Option<ConfEntry>,
     ifaces: Option<Vec<String>>,
     mac_file_map: Option<MacAddressConfigMap>,
     arch_file_map: Option<ArchConfigMap>,
     tftp_server_dir: Option<String>,
+    max_sessions: u64,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -29,6 +30,7 @@ pub struct ConfEntry {
     boot_server_ipv4: Option<Ipv4Addr>,
 }
 
+pub const DEFAULT_MAX_SESSIONS: u64 = 500;
 pub const CONFIG_FOLDER: &str = "preboot-oxide";
 pub const YAML_FILENAME: &str = "preboot-oxide.yaml";
 pub const ENV_VAR_PREFIX: &str = "PO_";
@@ -54,6 +56,7 @@ pub struct ProcessEnvConf {
     conf: ConfEntry,
     ifaces: Option<Vec<String>>,
     tftp_server_dir: Option<String>,
+    max_sessions: Option<u64>,
 }
 
 impl ProcessEnvConf {
@@ -67,6 +70,10 @@ impl ProcessEnvConf {
         let tftp_server_dir = std::env::var(format!("{ENV_VAR_PREFIX}TFTP_SERVER_DIR_PATH")).ok();
         let ifaces_csv = std::env::var(format!("{ENV_VAR_PREFIX}IFACES")).ok();
         let ifaces = ifaces_csv.map(|csv| csv.split(",").map(|s| s.to_string()).collect());
+        let max_sessions = std::env::var(format!("{ENV_VAR_PREFIX}MAX_SESSIONS"))
+            .map(|s| s.parse::<u64>().ok())
+            .ok()
+            .flatten();
 
         Self {
             conf: ConfEntry {
@@ -75,13 +82,22 @@ impl ProcessEnvConf {
             },
             tftp_server_dir,
             ifaces,
+            max_sessions,
         }
     }
 }
 
 impl From<ProcessEnvConf> for Conf {
     fn from(env_conf: ProcessEnvConf) -> Self {
-        let mut conf = Self::new();
+        let mut conf = Self {
+            arch_file_map: None,
+            default: None,
+            ifaces: None,
+            mac_file_map: None,
+            max_sessions: env_conf.max_sessions.unwrap_or(DEFAULT_MAX_SESSIONS),
+            tftp_server_dir: None,
+        };
+
         conf.merge_left_into_default(&env_conf.conf);
         conf.ifaces = env_conf.ifaces;
         conf.tftp_server_dir = env_conf.tftp_server_dir;
@@ -128,9 +144,6 @@ macro_rules! get_cloned_prop_by_mac_or_default {
 }
 
 impl Conf {
-    fn new() -> Self {
-        Default::default()
-    }
 
     pub fn validate(&self) -> Result<()> {
         if self
@@ -188,6 +201,11 @@ impl Conf {
                 .flatten()
                 .collect()
         });
+        let max_sessions = yaml_conf[0]["max_sessions"]
+            .as_i64()
+            .map(u64::try_from)
+            .unwrap_or(Ok(DEFAULT_MAX_SESSIONS))
+            .context("Parsing max_sessions from YAML file.")?;
 
         let mac_file_map: Option<MacAddressConfigMap> = yaml_conf[0]["by_mac_address"]
             .as_hash()
@@ -214,6 +232,7 @@ impl Conf {
             default,
             ifaces,
             tftp_server_dir,
+            max_sessions,
             mac_file_map,
             arch_file_map: None, // TODO: Add support for architecture based configuration
         })
@@ -281,5 +300,9 @@ impl Conf {
 
     pub fn get_tftp_serve_path(&self) -> Option<String> {
         self.tftp_server_dir.clone()
+    }
+
+    pub fn get_max_sessions(&self) -> u64 {
+        self.max_sessions
     }
 }

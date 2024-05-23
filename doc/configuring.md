@@ -43,6 +43,7 @@ The are 2 supported modes for configuration
     Default: `error`.
  - `PO_IFACES`: Comma separated names of the network interfaces the program should listen on. Example: `PO_IFACES=enp0s3,enp0s8`. Optional, unless specified, it will listen on all network interfaces.
  - `PO_CONF_PATH`: Path for overriding the default YAML configuration file.
+ - `PO_MAX_SESSIONS`: Optional number of maximum concurrent sessions to be allowed. Defaults to 500, used to protect against flood filling the system memory.
 
 Specifying ENV variables can be achieved in a number of ways depending on the OS and how the executable is ran. Some examples:
 
@@ -181,3 +182,4 @@ default:
 - `boot_server_ipv4`: IPv4 address of TFTP service.
 - `default`: Holds the `boot_file` and, optionally, `boot_server_ipv4` to provide to the booting client devices.
 - `by_mac_addres`: Holds the list of mac addresses that override either `boot_file` or `boot_server_ipv4`.
+- `max_sessions`: Optional, defaults to 500. Represents the maximum number of allowed sessions at the same time. A session starts when an OFFER message is seen from DHCP to the booting client and ends when either the client ACKed or refused the request. Sessions older than 3 minutes are automatically removed. This is used to prevent filling the system memory in case of a flood of DHCP messages on the network.

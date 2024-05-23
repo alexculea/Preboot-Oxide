@@ -13,6 +13,7 @@ Highlights include:
   - Facilitates easy & simple setup to get network booting working
   - Compatible with **an existing authoritative DHCP server** on the same network
   - Excellent maintainability and memory safety due to being written in Rust
+    - No Rust `unsafe` code in any of the network input processing logic.
 
 ## Supported platforms
 Should compile & work on all Unix derivatives - only tested on Debian Linux.
@@ -20,14 +21,12 @@ Should compile & work on all Unix derivatives - only tested on Debian Linux.
 ## Project Status
 Early stage - not recommended for critical or large scale use. Was was tested to work with limited device/network setup permutations.
 
+For future plans, see [Roadmap](./ROADMAP.md).
+
 ### Known issues or limitations
 - No IPv6 support
 - Requires elevated access to listen on privileged ports 67, 68 and 69
 - Requires a separate DHCP server as it is designed specifically for PXE boots and not for *usual* DHCP operation
-- Lacks OS service configuration
-- There's a DOS vulnerability where a flood of DHCP `OFFER` without follow up `ACK` will cause the process to fill the system memory.
-
-Some of the issues have planned fixes, see Roadmap.
 
 ## Installation
 
