@@ -15,7 +15,7 @@ use dhcproto::v4::{
   Opcode, OptionCode,
 };
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
-use polling::{Events, Poller};
+use polling::{Events, Poller as IOPoller};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use crate::util::bytes_to_mac_address;
 
@@ -48,24 +48,7 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
           .map(|iface| {
               listen_ips
                   .iter()
-                  .map(|ip| {
-                      let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-                      socket.set_broadcast(true)?;
-                      socket
-                          .bind_device(Some(iface.name.as_bytes()))
-                          .context(format!("Binding socket to network device: {}", iface.name))?;
-                      socket.set_reuse_port(true)?;
-                      socket.set_reuse_address(true)?;
-                      socket
-                          .bind(&SockAddr::from(ip.parse::<SocketAddrV4>()?))
-                          .context(format!(
-                              "Binding socket to {ip} on network device: {}",
-                              iface.name
-                          ))?;
-
-                      info!("Listening on IP {ip} on device {}", iface.name);
-                      Ok(socket)
-                  })
+                  .map(|ip| socket_from_iface_ip(iface, ip))
                   .collect()
           })
           .collect::<SocketVec2DRes>()
@@ -76,32 +59,13 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
           .collect(),
   );
 
-  let poller = Poller::new().context("Setting up OS polling")?;
-  sockets
-      .iter()
-      .enumerate()
-      .map(|(index, socket)| {
-          // SAFETY: sources have to be deleted before the poller is dropped
-          unsafe { poller.add(socket, polling::Event::readable(index)) }
-      })
-      .collect::<std::io::Result<()>>()?;
+  let poller = IOPoller::new().context("Setting up OS IO polling.")?;
+  enlist_sockets_for_events(&poller, &sockets)?;
 
   let mut events = Events::new();
   loop {
-      let _ = poller.wait(&mut events, None)?;
-      sockets
-          .iter()
-          .enumerate()
-          .map(|(index, socket)| {
-              unsafe {
-                  // SAFETY: The resource pointed to by fd must remain open for the duration of the returned BorrowedFd, and it must not have the value -1.
-                  let fd = BorrowedFd::borrow_raw(socket.as_raw_fd());
-
-                  // SAFETY: sources have to be deleted before the poller is dropped
-                  poller.modify(fd, polling::Event::readable(index))
-              }
-          })
-          .collect::<std::io::Result<()>>()?;
+      let _ = poller.wait(&mut events, None)?; // blocks until we get notified by the OS
+      re_enlist_sockets_for_events(&sockets, &poller)?;
 
       for event in events.iter() {
           let task_sockets = Arc::clone(&sockets);
@@ -123,6 +87,53 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
 
       events.clear();
   }
+}
+fn enlist_sockets_for_events(poller: &IOPoller, sockets: &Arc<Vec<UdpSocket>>) -> Result<()> {
+    sockets
+        .iter()
+        .enumerate()
+        .map(|(index, socket)| {
+            // SAFETY: sources have to be deleted before the poller is dropped
+            unsafe { poller.add(socket, polling::Event::readable(index)) }
+        })
+        .collect::<std::io::Result<()>>()?;
+    Ok(())
+}
+
+fn re_enlist_sockets_for_events(sockets: &Arc<Vec<UdpSocket>>, poller: &IOPoller) -> Result<()> {
+    sockets
+        .iter()
+        .enumerate()
+        .map(|(index, socket)| {
+            unsafe {
+                // SAFETY: The resource pointed to by fd must remain open for the duration of the returned BorrowedFd, and it must not have the value -1.
+                let fd = BorrowedFd::borrow_raw(socket.as_raw_fd());
+
+                // SAFETY: sources have to be deleted before the poller is dropped
+                poller.modify(fd, polling::Event::readable(index))
+            }
+        })
+        .collect::<std::io::Result<()>>()?;
+    Ok(())
+}
+
+fn socket_from_iface_ip(iface: &NetworkInterface, ip: &&str) -> Result<Socket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_broadcast(true)?;
+    socket
+            .bind_device(Some(iface.name.as_bytes()))
+            .context(format!("Binding socket to network device: {}", iface.name))?;
+    socket.set_reuse_port(true)?;
+    socket.set_reuse_address(true)?;
+    socket
+            .bind(&SockAddr::from(ip.parse::<SocketAddrV4>()?))
+            .context(format!(
+                "Binding socket to {ip} on network device: {}",
+                iface.name
+            ))?;
+
+    info!("Listening on IP {ip} on device {}", iface.name);
+    Ok(socket)
 }
 
 async fn handle_dhcp_message(
@@ -283,7 +294,7 @@ fn matches_filter(msg: &Message) -> bool {
       );
   }
 
-  trace!("Elligible DHCP message found, intercepting.");
+  trace!("Eligible DHCP message found, intercepting.");
 
   matches
 }
