@@ -42,6 +42,7 @@ The are 2 supported modes for configuration
     
     Default: `error`.
  - `PO_IFACES`: Comma separated names of the network interfaces the program should listen on. Example: `PO_IFACES=enp0s3,enp0s8`. Optional, unless specified, it will listen on all network interfaces.
+ - `PO_CONF_PATH`: Path for overriding the default YAML configuration file.
 
 Specifying ENV variables can be achieved in a number of ways depending on the OS and how the executable is ran. Some examples:
 
@@ -70,7 +71,7 @@ echo "$content" > ./target/release/.env
 
 In short, [YAML](https://yaml.org/) is a static configuration format similar to JSON that uses tabs instead of braces (`{}`). Simple [tutorial](https://www.redhat.com/sysadmin/yaml-beginners).
 
-The YAML content is loaded from `~/.config/preboot-oxide/preboot-oxide.yaml`. There is a sample file at the project root [here](../sample.preboot-oxide.yaml), reading on is recommended for a better understanding.
+The YAML content is loaded from `PO_CONF_PATH` env variable or from  `~/.config/preboot-oxide/preboot-oxide.yaml`. There is a sample file at the project root [here](../sample.preboot-oxide.yaml), reading on is recommended for a better understanding.
 
 This will override process ENV variables (temporary, it is planned to reverse the priority with the variables taking precedence). When running as service with `systemd`, the location will correspond to the `root` user at `/root/.config/preboot-oxide/preboot-oxide.yaml`.
 

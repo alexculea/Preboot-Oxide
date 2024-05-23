@@ -26,9 +26,12 @@ fn main() -> Result<()> {
         .parse_filters(&log_level)
         .init();
 
-    let server_config = Conf::from_yaml_config(None).unwrap_or_else(|e| {
+    let conf_path = std::env::var(format!("{env_prefix}CONF_PATH"))
+        .map(std::path::PathBuf::from)
+        .ok();
+    let server_config = Conf::from_yaml_config(conf_path.as_ref()).unwrap_or_else(|e| {
         info!("Not loading YAML configuration: {}", e.to_string());
-        Conf::from(ProcessEnvConf::from_proccess_env())
+        Conf::from(ProcessEnvConf::from_process_env())
     });
     server_config.validate()?;
 

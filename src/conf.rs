@@ -57,7 +57,7 @@ pub struct ProcessEnvConf {
 }
 
 impl ProcessEnvConf {
-    pub fn from_proccess_env() -> ProcessEnvConf {
+    pub fn from_process_env() -> ProcessEnvConf {
         let boot_server_ipv4: Option<Ipv4Addr> =
             std::env::var(format!("{ENV_VAR_PREFIX}TFTP_SERVER_IPV4"))
                 .unwrap_or_default()
@@ -159,7 +159,7 @@ impl Conf {
         Ok(())
     }
 
-    pub fn from_yaml_config(path_override: Option<&Path>) -> Result<Self> {
+    pub fn from_yaml_config(path_override: Option<&PathBuf>) -> Result<Self> {
         let path = path_override
             .map(|path| PathBuf::from(path))
             .unwrap_or_else(|| {
