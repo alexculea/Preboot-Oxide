@@ -3,7 +3,7 @@
 ### Download & install
 ```BASH
     # donload the latest .deb package
-    wget https://github.com/alexcule/preboot-oxide/releases/latest/download/preboot-oxide.deb
+    wget https://github.com/alexculea/preboot-oxide/releases/latest/download/preboot-oxide.deb
 
     # install
     sudo dkpg -i preboot-oxide.deb
@@ -37,6 +37,9 @@ sudo systemd start preboot-oxide
 # to check status use
 sudo systemd status preboot-oxide
 ```
+
+(see [Configuring](./configuring.md) or [Troubleshooting](./troubleshooting.md) in case of failure)
+
 
 ### Uninstalling
 

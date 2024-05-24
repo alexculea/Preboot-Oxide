@@ -20,13 +20,13 @@
     tar -xf /tmp/deb-installer.tar.gz -C /tmp/boot
 
     # provide config and start (for classic BIOS)
-    PO_BOOT_FILE=pxelinux.0 PO_TFTP_SERVER_DIR_PATH=/tmp/boot/debian-installer/amd64 preboot-oxide
+    PO_BOOT_FILE=pxelinux.0 PO_TFTP_SERVER_DIR_PATH=/tmp/boot/debian-installer/amd64 sudo preboot-oxide
 
     # for EFI
-    PO_BOOT_FILE=bootnetx64.efi PO_TFTP_SERVER_DIR_PATH=/tmp/boot/debian-installer/amd64 preboot-oxide
+    PO_BOOT_FILE=bootnetx64.efi PO_TFTP_SERVER_DIR_PATH=/tmp/boot/debian-installer/amd64 sudo preboot-oxide
 
     # Done, booting over the network should now work! ❇️
     ```
 
-    
+    (see [Configuring](./configuring.md) or [Troubleshooting](./troubleshooting.md) otherwise)
 
