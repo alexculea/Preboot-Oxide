@@ -5,12 +5,15 @@ extern crate phf;
 
 mod conf;
 mod dhcp;
+mod tftp;
 mod util;
 
-use crate::conf::{Conf, ProcessEnvConf};
+use crate::{
+    conf::{Conf, ProcessEnvConf},
+    tftp::spawn_tftp_service_async,
+};
 use anyhow::Context;
 use async_std::task;
-use async_tftp::server::TftpServerBuilder;
 use log::{debug, info};
 pub type Result<T> = anyhow::Result<T, anyhow::Error>;
 
@@ -34,25 +37,10 @@ fn main() -> Result<()> {
         Conf::from(ProcessEnvConf::from_process_env())
     });
     server_config.validate()?;
+    spawn_tftp_service_async(&server_config)?;
 
-    if let Some(tftp_path) = server_config.get_tftp_serve_path() {
-        let tftp_dir = tftp_path.clone();
-        task::spawn(async {
-            let tftpd = TftpServerBuilder::with_dir_ro(tftp_path)
-                .unwrap()
-                .build()
-                .await
-                .unwrap();
-            tftpd.serve().await.unwrap();
-        });
-        info!("TFTP server started on path: {}", tftp_dir);
-    } else {
-        info!("TFTP server not started, no path configured.");
-    }
-
-    let result: Result<()> = task::block_on(
-        dhcp::server_loop(server_config)
-    ).context("Starting DHCP service");
+    let result: Result<()> =
+        task::block_on(dhcp::server_loop(server_config)).context("Starting DHCP service");
 
     debug!("Exiting");
     result
