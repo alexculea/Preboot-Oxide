@@ -17,6 +17,10 @@
         "settings set target.inherit-env false", // See note below.
       ],
       "sourceLanguages": ["rust"],
+      "env": {
+        "PO_CONF_PATH": "/home/alex/pxe-dhcp-rs/conf.yaml",
+        "PO_LOG_LEVEL": "preboot_oxide::conf=trace",
+      }
     },
     {
       "type": "lldb",

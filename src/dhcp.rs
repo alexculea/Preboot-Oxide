@@ -11,7 +11,7 @@ use async_std::sync::RwLock;
 use async_std::{net::UdpSocket, task};
 use log::{debug, error, info, trace};
 
-use crate::util::bytes_to_mac_address;
+use crate::{conf::ConfEntry, util::bytes_to_mac_address};
 use dhcproto::v4::{
     Decodable, Decoder, DhcpOption, DhcpOptions, Encodable, Encoder, Flags, Message, MessageType,
     Opcode, OptionCode,
@@ -25,17 +25,64 @@ use crate::Result;
 
 struct Session {
     pub client_ip: Option<Ipv4Addr>,
-    pub subnet: DhcpOption,
-    pub lease_time: DhcpOption,
+    pub subnet: Option<DhcpOption>,
+    pub lease_time: Option<DhcpOption>,
     pub start_time: std::time::SystemTime,
+    pub discover_message: Option<Message>,
 }
 
-type SessionMap = HashMap<u32, Session>;
 type SocketVec2DRes = Result<Vec<Vec<Socket>>>;
+
+struct SessionMap {
+    sessions: HashMap<u32, Session>,
+    max_sessions: u64,
+}
+
+impl SessionMap {
+    fn new(max_sessions: u64) -> Self {
+        Self {
+            sessions: Default::default(),
+            max_sessions,
+        }
+    }
+
+    pub fn insert(&mut self, key: u32, value: Session) -> Result<()> {
+        if u64::try_from(self.sessions.len())? > self.max_sessions {
+            bail!("Max sessions of {} reached. Ignoring.", self.max_sessions)
+        }
+
+        self.sessions.insert(key, value);
+        Ok(())
+    }
+
+    pub fn remove(&mut self, key: &u32) -> Option<Session> {
+        self.sessions.remove(key)
+    }
+
+    pub fn get(&self, key: &u32) -> Option<&Session> {
+        self.sessions.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &u32) -> Option<&mut Session> {
+        self.sessions.get_mut(key)
+    }
+
+    pub fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&u32, &mut Session) -> bool,
+    {
+        self.sessions.retain(f);
+    }
+
+    pub fn iter(&self) -> std::collections::hash_map::Iter<u32, Session> {
+        self.sessions.iter()
+    }
+}
 
 pub async fn server_loop(server_config: Conf) -> Result<()> {
     let listen_ips = ["0.0.0.0:67", "255.255.255.255:68"];
-    let sessions = Arc::new(RwLock::new(Default::default()));
+    let max_sessions = server_config.get_max_sessions();
+    let sessions = Arc::new(RwLock::new(SessionMap::new(max_sessions)));
     let network_interfaces = NetworkInterface::show().context("Listing network interfaces")?;
     let sockets: Arc<Vec<UdpSocket>> = Arc::new(
         network_interfaces
@@ -117,8 +164,11 @@ fn start_session_cleaner(active_sessions: Arc<RwLock<SessionMap>>) {
             drop(sessions); // unlock the RwLock
                             // would have been dropped anyway at the end of the loop
                             // but best to keep awareness of this happing to avoid deadlocks
-            
-            trace!("Session cleaner removed {} timed out sessions.", items_to_remove.len());
+
+            trace!(
+                "Session cleaner removed {} timed out sessions.",
+                items_to_remove.len()
+            );
         }
     });
 }
@@ -204,9 +254,9 @@ async fn handle_dhcp_message(
         ))?
         .clone();
 
-    let client_msg = Message::decode(&mut Decoder::new(&rcv_data))?;
-    let client_xid = client_msg.xid();
-    let opts = client_msg.opts();
+    let incoming_msg = Message::decode(&mut Decoder::new(&rcv_data))?;
+    let client_xid = incoming_msg.xid();
+    let opts = incoming_msg.opts();
     let msg_type = opts.msg_type().context("No message type found")?;
 
     debug!(
@@ -215,75 +265,110 @@ async fn handle_dhcp_message(
         peer.port(),
         msg_type
     );
-    trace!("{:#?}", client_msg);
+    trace!("{:#?}", incoming_msg);
 
-    if !matches_filter(&client_msg) {
+    if !matches_filter(&incoming_msg) {
         return Ok(());
     }
 
-    let client_mac_address = client_msg.chaddr().first_chunk().ok_or(anyhow!(
+    let client_mac_address = incoming_msg.chaddr().first_chunk().ok_or(anyhow!(
         "The client MAC address does not fit the size requirements of exactly 6 bytes."
     ))?;
+    let client_mac_address_str = bytes_to_mac_address(client_mac_address);
 
     let response = match msg_type {
+        MessageType::Discover => {
+            let mut sessions = sessions.write().await;
+            let mut session = sessions.remove(&client_xid).unwrap_or(Session {
+                client_ip: None,
+                subnet: None,
+                lease_time: None,
+                start_time: std::time::SystemTime::now(),
+                discover_message: None,
+            });
+            session.discover_message = Some(incoming_msg.clone());
+            sessions.insert(client_xid, session)?;
+            drop(sessions);
+
+            /*
+            We will not respond to the discover message until the authoritative
+            DHCP server responds first, which it should with an Offer that we
+            duplicate below with adding the boot information to the message.
+            */
+            return Ok(());
+        }
         MessageType::Offer => {
             let mut sessions = sessions.write().await;
-            let max_sessions = server_config.get_max_sessions();
-            if u64::try_from(sessions.len())? > max_sessions {
-                bail!("Max sessions of {max_sessions} reached. Ignoring.")
+            let session = sessions.get_mut(&client_xid);
+            if session.is_none() {
+                debug!(
+                    "No session with XID: {client_xid}. Most likely regular DHCP on the network. Ignoring.",
+                );
+                return Ok(());
             }
 
-            sessions.insert(
-                client_msg.xid(),
-                Session {
-                    start_time: std::time::SystemTime::now(),
-                    client_ip: Some(client_msg.yiaddr()),
-                    subnet: client_msg
-                        .opts()
-                        .get(OptionCode::SubnetMask)
-                        .unwrap()
-                        .clone(),
-                    lease_time: client_msg
-                        .opts()
-                        .get(OptionCode::AddressLeaseTime)
-                        .unwrap()
-                        .clone(),
-                },
-            );
+            let session = session.unwrap();
+            session.client_ip = Some(incoming_msg.yiaddr());
+            session.subnet = incoming_msg.opts().get(OptionCode::SubnetMask).cloned();
+            session.lease_time = incoming_msg
+                .opts()
+                .get(OptionCode::AddressLeaseTime)
+                .cloned();
 
-            let msg = apply_self_to_message(&client_msg, &self_ipv4);
-            add_boot_info_to_message(&msg, server_config, client_mac_address, Some(&self_ipv4))?
+            let initial_discover_msg = session.discover_message.clone().ok_or(anyhow!(
+                "Initial discovery message for XID {client_xid} not found due to either a bug or incorrect DHCP server behavior. Skipping.",
+            ))?;
+            drop(sessions);
+
+            let discover_msg_doc = serde_json::to_value(initial_discover_msg)?;
+            let client_cfg = server_config
+                .get_from_doc(discover_msg_doc)?
+                .ok_or(anyhow!("No configuration found for client {client_mac_address_str}. Skipping",))?;
+            let msg = apply_self_to_message(&incoming_msg, &self_ipv4);
+            add_boot_info_to_message(&msg, &client_cfg, client_mac_address, Some(&self_ipv4))?
         }
         MessageType::Request => {
             let sessions = sessions.read().await;
             let session = sessions.get(&client_xid);
             if session.is_none() {
-                info!("No session found for client having XID: {}", client_xid);
-                return Ok(())
+                info!("No session found for client {client_mac_address_str}, XID: {client_xid}.");
+                return Ok(());
             }
             let session = session.unwrap();
+            let incoming_msg_doc = serde_json::to_value(incoming_msg.clone())?;
+            let client_cfg = server_config
+                .get_from_doc(incoming_msg_doc)?
+                .ok_or(anyhow!(
+                    "No configuration found for client {client_mac_address_str}. Skipping",
+                ))?;
 
             let mut ack = Message::default();
             let mut opts = DhcpOptions::default();
             opts.insert(DhcpOption::MessageType(MessageType::Ack));
-            opts.insert(session.subnet.clone());
-            opts.insert(session.lease_time.clone());
+            opts.insert(
+                session
+                    .subnet
+                    .clone()
+                    .unwrap_or(DhcpOption::SubnetMask(Ipv4Addr::new(255, 255, 255, 0))),
+            );
+            opts.insert(
+                session
+                    .lease_time
+                    .clone()
+                    .unwrap_or(DhcpOption::AddressLeaseTime(60)),
+            ); // in minutes
 
             ack.set_flags(Flags::new(0).set_broadcast())
-                .set_yiaddr(session.client_ip.unwrap())
+                .set_yiaddr(session.client_ip.unwrap_or(Ipv4Addr::new(0, 0, 0, 0)))
                 .set_opcode(Opcode::BootReply)
                 .set_opts(opts)
                 .set_chaddr(client_mac_address)
-                .set_xid(client_msg.xid());
+                .set_xid(incoming_msg.xid());
             drop(sessions);
 
             ack = apply_self_to_message(&ack, &self_ipv4);
-            ack = add_boot_info_to_message(
-                &ack,
-                server_config,
-                client_mac_address,
-                Some(&self_ipv4),
-            )?;
+            ack =
+                add_boot_info_to_message(&ack, &client_cfg, client_mac_address, Some(&self_ipv4))?;
 
             ack
         }
@@ -295,7 +380,7 @@ async fn handle_dhcp_message(
             return if msg_type == MessageType::Decline {
                 bail!(
                     "Client {} declined REQUEST.",
-                    bytes_to_mac_address(client_msg.chaddr())
+                    bytes_to_mac_address(incoming_msg.chaddr())
                 )
             } else {
                 Ok(())
@@ -329,13 +414,14 @@ fn matches_filter(msg: &Message) -> bool {
     let is_request = msg_opts.has_msg_type(MessageType::Request);
     let is_offer = msg_opts.has_msg_type(MessageType::Offer);
     let is_ack = msg_opts.has_msg_type(MessageType::Ack);
+    let is_discover = msg_opts.has_msg_type(MessageType::Discover);
 
-    let matches = (!has_boot_file_name && is_offer) | is_request | is_ack;
+    let matches = (!has_boot_file_name && is_offer) | is_request | is_ack | is_discover;
     if !matches {
         debug!(
             "DHCP message ignored due to not matching filter. \
           Required: has_boot_file_name: {has_boot_file_name}, is_request: {is_request}\
-          is_offer: {is_offer}, is_ack: {is_ack}"
+          is_offer: {is_offer}, is_ack: {is_ack}, is_discover: {is_discover}"
         );
     }
 
@@ -351,18 +437,18 @@ fn socket2_to_async_std(socket: Socket) -> UdpSocket {
 
 fn add_boot_info_to_message(
     msg: &Message,
-    config: &Conf,
+    conf: &ConfEntry,
     client: &MacAddress,
     my_ipv4: Option<&Ipv4Addr>,
 ) -> Result<Message> {
     let mut res = msg.clone();
     let mut opts = msg.opts().clone();
 
-    let boot_filename = config.get_boot_file(client).ok_or(anyhow!(
+    let boot_filename = conf.boot_file.as_ref().ok_or(anyhow!(
         "Cannot determine boot file path for client having MAC address: {}.",
         bytes_to_mac_address(client)
     ))?;
-    let tfpt_srv_addr = config.get_boot_server_ipv4(my_ipv4, client).ok_or(anyhow!(
+    let tfpt_srv_addr = conf.boot_server_ipv4.or(my_ipv4.copied()).ok_or(anyhow!(
         "Cannot determine TFTP server IPv4 address for client having MAC address: {}",
         bytes_to_mac_address(client)
     ))?;

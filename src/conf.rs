@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use log::trace;
+use once_cell::sync::Lazy;
 use std::{
     collections::HashMap,
     io::Read,
@@ -8,33 +10,60 @@ use std::{
 };
 use yaml_rust2::Yaml;
 
-use crate::util::mac_address_to_bytes;
-
 pub type MacAddress = [u8; 6];
-pub type MacAddressConfigMap = HashMap<MacAddress, Option<ConfEntry>>;
-pub type ArchConfigMap = HashMap<u16, ConfEntry>;
+type FieldConverter = for<'a> fn(&'a serde_json::Value) -> Result<String>;
+type FieldConverterMap = Lazy<HashMap<&'static str, FieldConverter>>;
 
 #[derive(Clone, Debug)]
 pub struct Conf {
     default: Option<ConfEntry>,
     ifaces: Option<Vec<String>>,
-    mac_file_map: Option<MacAddressConfigMap>,
-    arch_file_map: Option<ArchConfigMap>,
+    match_map: Option<Vec<MatchEntry>>,
     tftp_server_dir: Option<String>,
     max_sessions: u64,
 }
 
 #[derive(Default, Clone, Debug)]
 pub struct ConfEntry {
-    boot_file: Option<String>,
-    boot_server_ipv4: Option<Ipv4Addr>,
+    pub boot_file: Option<String>,
+    pub boot_server_ipv4: Option<Ipv4Addr>,
+}
+
+impl ConfEntry {
+    pub fn merge(self, other_option: Option<&ConfEntry>) -> ConfEntry {
+        let other = if let Some(other) = other_option {
+            other
+        } else {
+            return self;
+        };
+
+        let boot_file = self.boot_file.or(other.boot_file.clone());
+        let boot_server_ipv4 = self.boot_server_ipv4.or(other.boot_server_ipv4);
+
+        ConfEntry {
+            boot_file,
+            boot_server_ipv4,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum MatchType {
+    Any,
+    All,
+}
+#[derive(Clone, Debug)]
+struct MatchEntry<T = String> {
+    fields_values: HashMap<String, T>,
+    conf: ConfEntry,
+    match_type: MatchType,
+    regex: bool,
 }
 
 pub const DEFAULT_MAX_SESSIONS: u64 = 500;
 pub const CONFIG_FOLDER: &str = "preboot-oxide";
 pub const YAML_FILENAME: &str = "preboot-oxide.yaml";
 pub const ENV_VAR_PREFIX: &str = "PO_";
-
 // Unused for now, until we add support for architecture based configuration
 pub const _DHCP_ARCHES: phf::Map<&'static str, u16> = phf_map! {
     "x86" => 0x0,
@@ -51,6 +80,35 @@ pub const _DHCP_ARCHES: phf::Map<&'static str, u16> = phf_map! {
     "riscv128-uefi" => 0x1d
 };
 // source: https://www.iana.org/assignments/dhcpv6-parameters/dhcpv6-parameters.xhtml#processor-architecture
+
+pub const FIELD_MAP: phf::Map<&'static str, &'static str> = phf_map! {
+    "ClientMacAddress" => "chaddr",
+    "HardwareType" => "htype",
+};
+static FIELD_CONVERTERS: FieldConverterMap = Lazy::new(|| {
+    HashMap::from([
+        (
+            "ClientMacAddress",
+            (|input: &serde_json::Value| Conf::get_mac_from_doc_string(input)) as FieldConverter,
+        ),
+        (
+            "ClassIdentifier",
+            |input: &serde_json::Value| -> Result<String> {
+                input
+                    .as_array()
+                    .map(|arr| {
+                        Ok(arr
+                            .iter()
+                            .map(|item| Ok(char::try_from(item.as_u64().unwrap_or(0) as u32)?))
+                            .collect::<Result<Vec<char>>>()?
+                            .iter()
+                            .collect::<String>())
+                    })
+                    .unwrap_or(Ok(String::default()))
+            },
+        ),
+    ])
+});
 
 pub struct ProcessEnvConf {
     conf: ConfEntry,
@@ -90,11 +148,10 @@ impl ProcessEnvConf {
 impl From<ProcessEnvConf> for Conf {
     fn from(env_conf: ProcessEnvConf) -> Self {
         let mut conf = Self {
-            arch_file_map: None,
             default: None,
             ifaces: None,
-            mac_file_map: None,
             max_sessions: env_conf.max_sessions.unwrap_or(DEFAULT_MAX_SESSIONS),
+            match_map: None,
             tftp_server_dir: None,
         };
 
@@ -106,69 +163,31 @@ impl From<ProcessEnvConf> for Conf {
     }
 }
 
-/// Checks if a property is set in the default configuration or in any of the MAC address definitions. If any of them is set, returns true.
-macro_rules! has_prop_deep {
-    ($self:ident, $prop:ident) => {
-        $self
-            .default
-            .as_ref()
-            .map(|i| i.$prop.is_some())
-            .unwrap_or_else(|| {
-                $self
-                    .mac_file_map
-                    .as_ref()
-                    .map(|mac_map| {
-                        mac_map
-                            .values()
-                            .any(|conf| conf.as_ref().map(|c| c.$prop.is_some()).unwrap_or(false))
-                    })
-                    .unwrap_or(false)
-            })
-    };
-}
-
-/// Gets the value of the given property in MAC address configuration or in the default configuration. If the property is not set in any of them, returns None.
-macro_rules! get_cloned_prop_by_mac_or_default {
-    ($self:ident, $prop:ident, $mac: ident) => {
-        $self.mac_file_map
-        .as_ref()
-        .map(|mac_map| {
-            mac_map
-                .get($mac)
-                .map(|conf| conf.as_ref()?.$prop.clone())
-        })
-        .flatten()
-        .flatten()
-        .or_else(|| $self.default.as_ref()?.$prop.clone())
-    };
-}
-
 impl Conf {
-
     pub fn validate(&self) -> Result<()> {
-        if self
-            .default
+        let has_external_tftp_server = self
+            .match_map
             .as_ref()
-            .map(|i| i.boot_file.as_ref())
-            .is_none()
-            && self.mac_file_map.is_none()
-            && self.arch_file_map.is_none()
-        {
-            bail!("No path to the boot file was configured.")
+            .map(|m| m.iter().any(|me| me.conf.boot_server_ipv4.is_some()))
+            .or(self.default.as_ref().map(|d| d.boot_server_ipv4.is_some()))
+            .unwrap_or(false);
+        let has_tftp_path = self.tftp_server_dir.is_some();
+        let has_boot_filename = self
+            .match_map
+            .as_ref()
+            .map(|m| m.iter().any(|me| me.conf.boot_file.is_some()))
+            .or(self.default.as_ref().map(|d| d.boot_file.is_some()))
+            .unwrap_or(false);
+
+        if !has_external_tftp_server && !has_tftp_path {
+            return Err(anyhow!(
+                "No TFTP server path or external TFTP server configured."
+            ));
         }
 
-        let has_external_tftp_server = has_prop_deep!(self, boot_server_ipv4);
-        let has_boot_file = has_prop_deep!(self, boot_file);
-        let has_tftp_server_dir = self.tftp_server_dir.is_some();
-
-        if !has_external_tftp_server && !has_tftp_server_dir {
-            bail!("Neither a TFTP local directory path nor an external TFTP server IP address was configured.")
+        if !has_boot_filename {
+            return Err(anyhow!("No boot filename configured."));
         }
-
-        if !has_boot_file {
-            bail!("No path to the boot file was configured. This is required to tell the clients what file to boot.")
-        }
-
         Ok(())
     }
 
@@ -207,25 +226,16 @@ impl Conf {
             .unwrap_or(Ok(DEFAULT_MAX_SESSIONS))
             .context("Parsing max_sessions from YAML file.")?;
 
-        let mac_file_map: Option<MacAddressConfigMap> = yaml_conf[0]["by_mac_address"]
-            .as_hash()
-            .map(
-                |yaml_object: &yaml_rust2::yaml::Hash| -> Result<MacAddressConfigMap> {
-                    let mut mac_file_map = HashMap::new();
-                    for (mac_address, conf) in yaml_object.iter() {
-                        let mac = mac_address
-                            .as_str()
-                            .map(mac_address_to_bytes)
-                            .transpose()?
-                            .ok_or(anyhow!("Expected a MAC address"))?;
-
-                        let conf_entry = Conf::base_conf_from_yaml(conf)?;
-                        mac_file_map.insert(mac, conf_entry);
-                    }
-
-                    Result::Ok(mac_file_map)
-                },
-            )
+        let match_map: Option<Vec<MatchEntry>> = yaml_conf[0]["match"]
+            .as_vec()
+            .map(|match_entry| -> Result<Vec<MatchEntry>> {
+                Result::Ok(
+                    match_entry
+                        .iter()
+                        .map(Self::match_entry_from_yaml)
+                        .collect::<Result<Vec<MatchEntry>>>()?,
+                )
+            })
             .transpose()?;
 
         Ok(Self {
@@ -233,8 +243,53 @@ impl Conf {
             ifaces,
             tftp_server_dir,
             max_sessions,
-            mac_file_map,
-            arch_file_map: None, // TODO: Add support for architecture based configuration
+            match_map,
+        })
+    }
+
+    fn match_entry_from_yaml(item: &yaml_rust2::Yaml) -> Result<MatchEntry> {
+        let conf = Conf::base_conf_from_yaml(&item["conf"])?
+            .ok_or(anyhow!("No configuration found for match entry"))?;
+
+        let match_type = item["match_type"]
+            .as_str()
+            .map(|s| match s.to_lowercase().as_str() {
+                "any" => Ok(MatchType::Any),
+                "all" => Ok(MatchType::All),
+                _ => Err(anyhow!("Invalid match type: {s}")),
+            })
+            .unwrap_or(Ok(MatchType::All))?;
+
+        let fields_values = item["select"]
+            .as_hash()
+            .map(|yaml_obj| -> Result<HashMap<String, String>> {
+                Result::Ok(
+                    yaml_obj
+                        .iter()
+                        .map(|(key, value)| {
+                            Ok((
+                                key.as_str()
+                                    .ok_or(anyhow!("Expected a string key"))?
+                                    .to_string(),
+                                value
+                                    .as_str()
+                                    .ok_or(anyhow!("Expected a string value"))?
+                                    .to_string(),
+                            ))
+                        })
+                        .collect::<Result<HashMap<String, String>>>()?,
+                )
+            })
+            .transpose()?
+            .ok_or(anyhow!("Expected a hash for select"))?;
+
+        let regex = item["regex"].as_bool().unwrap_or(false);
+
+        Ok(MatchEntry {
+            conf,
+            fields_values,
+            match_type,
+            regex,
         })
     }
 
@@ -276,30 +331,119 @@ impl Conf {
             .or(Some(other.clone()));
     }
 
-    pub fn get_boot_file(&self, mac_address: &MacAddress) -> Option<String> {
-        get_cloned_prop_by_mac_or_default!(self, boot_file, mac_address)
-    }
-
-    pub fn get_boot_server_ipv4(
-        &self,
-        self_ip_v4: Option<&Ipv4Addr>,
-        mac_address: &MacAddress,
-    ) -> Option<Ipv4Addr> {
-        let conf_tftp_server_ipv4 = get_cloned_prop_by_mac_or_default!(self, boot_server_ipv4, mac_address);
-
-        if conf_tftp_server_ipv4.is_some() {
-            return conf_tftp_server_ipv4;
-        } else {
-            return self_ip_v4.copied();
-        }
-    }
-
     pub fn get_ifaces(&self) -> Option<&Vec<String>> {
         self.ifaces.as_ref()
     }
 
     pub fn get_tftp_serve_path(&self) -> Option<String> {
         self.tftp_server_dir.clone()
+    }
+
+    fn get_mac_from_doc_string(doc: &serde_json::Value) -> Result<String> {
+        let client_mac: String = doc
+            .as_array()
+            .and_then(|list| {
+                Some(
+                    list.iter()
+                        .take(6)
+                        .map(|value| {
+                            value
+                                .as_u64()
+                                .map(|byte| Some(format!("{:0>2X}", byte)))
+                                .flatten()
+                        })
+                        .collect::<Option<Vec<String>>>(),
+                )
+            })
+            .flatten()
+            .ok_or(anyhow!("Expected MAC address to be an array of numbers."))?
+            .join(":");
+
+        Ok(client_mac)
+    }
+
+    fn is_match(doc: &serde_json::Value, match_entry: &MatchEntry) -> bool {
+        let matcher = |cfg_key: &String, cfg_value| {
+            let cfg_key = cfg_key.clone();
+            move |doc_value: &serde_json::Value| {
+                let default_converter: FieldConverter =
+                    |v: &serde_json::Value| -> Result<String> { Ok(v.to_string()) };
+                let doc_val_converter = FIELD_CONVERTERS
+                    .get(cfg_key.as_str())
+                    .unwrap_or(&default_converter);
+                let converted_value = doc_val_converter(doc_value).unwrap_or(doc_value.to_string());
+
+                let match_result = if match_entry.regex {
+                    let re = regex::Regex::new(cfg_value).unwrap();
+                    re.is_match(&converted_value)
+                } else {
+                    converted_value == cfg_value
+                };
+
+                let match_type = if match_entry.regex {
+                    "regex"
+                } else {
+                    "exact"
+                };
+
+                trace!("Matching {match_type} field {cfg_key}=\"{converted_value}\" to \"{cfg_value}\", matching = {match_result}");
+                match_result
+            }
+        };
+
+        match match_entry.match_type {
+            MatchType::Any => match_entry.fields_values.iter().any(|(key, config_value)| {
+                doc.get(Self::get_remapped_key(key))
+                    .or(doc
+                        .get("opts")
+                        .and_then(|opts| opts.get(key))
+                        .and_then(|opts_key| opts_key.get(key)))
+                    .map(matcher(key, config_value))
+                    .unwrap_or(false)
+            }),
+            MatchType::All => match_entry.fields_values.iter().all(|(key, config_value)| {
+                doc.get(Self::get_remapped_key(key))
+                    .or(doc
+                        .get("opts")
+                        .and_then(|opts| opts.get(key))
+                        .and_then(|opts_key| opts_key.get(key)))
+                    .map(matcher(key, config_value))
+                    .unwrap_or(false)
+            }),
+        }
+    }
+
+    fn get_remapped_key<'a>(key: &'a str) -> &'a str {
+        FIELD_MAP.get(key).unwrap_or(&key)
+    }
+
+    pub fn get_from_doc(&self, doc: serde_json::Value) -> Result<Option<ConfEntry>> {
+        let matched_conf = self
+            .match_map
+            .as_ref()
+            .map(|matches| {
+                matches
+                    .iter()
+                    .find(|match_entry| Self::is_match(&doc, match_entry))
+            })
+            .flatten()
+            .map(|m| &m.conf)
+            .inspect(|conf| trace!("Found matching entry from 'match' rule.\n{:#?}", conf))
+            .or_else(|| {
+                trace!("No matching entry found from 'match' rule.");
+                self.default.as_ref()
+            });
+
+        let result = matched_conf
+            .map(|cfg| cfg.clone())
+            .map(|cfg| cfg.merge(self.default.as_ref()))
+            .inspect(|conf| trace!("Final result combined with default:\n{:#?}", conf))
+            .or_else(|| { 
+                trace!("No configuration found for this client in either 'default' or 'match' rules.");
+                None 
+            });
+
+        Ok(result)
     }
 
     pub fn get_max_sessions(&self) -> u64 {
