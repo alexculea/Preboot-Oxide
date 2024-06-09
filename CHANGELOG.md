@@ -19,8 +19,12 @@
 - chore: add version number gen script (abae350)
 - feat: mark socket addresses and ports as reusable Allows other processes to listen to the 68 and 67 ports, removing conflicts with the OS DHCP network service (527e9c0)
 - feat: Add support for MAC address config via YAML file Introduces optional YAML file config that allows specifying different boot parameters based on the MAC address of the requesting client helping customize the booting process to the client requirements (8b2e125)
-## Version 1.9.11
+## Version 1.0.1
+- chore: fix version generation script (d72b521)
+- fix: Determine the correct incoming interface to respond with the correct IP address (f50807a)
+- chore: Update version and changelog (f8db5e9)
 - feat!: Introduce more powerful config match rules replacing old mac address mapping (c229688)
 - fix: ensure TFTP service also respects configured listen network interfaces (410cb4c)
 - refactor: Move TFTP service to its own module (7171fd9)
 - doc: Small improvements & fixes (208bd05)
+- Release version 0.9.9 (1cc6139)
