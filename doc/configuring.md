@@ -2,6 +2,7 @@
 
 <!-- TOC --><a name="configuration"></a>
 # Configuration
+Configuration is supported by either process ENV variables or with YAML config file. For very quick & simple setups ENV vars might be sufficient, YAML otherwise.
 
 <!-- TOC start (generated with https://github.com/derlin/bitdowntoc) -->
 
@@ -22,23 +23,30 @@
 
 <!-- TOC end -->
 
-
 <!-- TOC --><a name="process-environment-variables"></a>
 ## Process environment variables
 <!-- TOC --><a name="supported-env-variables"></a>
+
+If a YAML file is found, all process env variables are ignored.
+
 ### Supported ENV variables
 
+ 
+ - `PO_TFTP_SERVER_DIR_PATH`: Path to the local directory to be served by the TFTP service. Optional and if not supplied, it is expected that `PO_TFTP_SERVER_IPV4` will be given instead to use an external TFTP server.
+
+      When this option is configured, it activates the TFTP service at port 69 on the configured `PO_IFACES` and the specified directory in read only mode. No remote changes are allowed but ⚠️ _the directory becomes accessible to any client connecting_ ⚠️. TFTP doesn't support authentication.
+
  - `PO_TFTP_SERVER_IPV4`: IPv4 of the running Trivial File Transfer Protocol (TFTP) boot server. Only necessary when using a separate TFTP server. If not specified, a TFTP service will be started, indicating its own IP to the booting clients to reach the service. If this has a value, the TFTP service is disabled.
- - `PO_BOOT_FILE`: Path to the boot image within the TFTP server - relative to the TFTP directory served, commonly configured as `pxelinux.0` or `folder/path/to-it.efi`. Parameter is required.
+ - `PO_BOOT_FILE`: The UNIX path to the file to be executed at boot time from within the TFTP service. The boot file path is relative to the directory of the TFTP service. If the file is at `/tmp/boot/file.bin` on the local disk and the TFTP service is configured to serve from `/tmp/boot` then the `boot_file` specified should be just `file.bin`. Parameter is required.
  - `PO_LOG_LEVEL`: Filter and verbosity level for output to `stdout`. 
 
     Syntax: `<component>`=`level`. 
     
-    Example: `PO_LOG_LEVEL=preboot_-_oxide=info`
+    Example: `PO_LOG_LEVEL=preboot_oxide=info`
     
     Allows setting log level to Preboot Oxide and its dependencies. The supported levels are: error, warn, info, debug, trace. 
     
-    Example: `PO_LOG_LEVEL=Preboot_Oxide=trace`, for even more verbose output: `PO_LOG_LEVEL=trace`. 
+    Example: `PO_LOG_LEVEL=preboot_oxide=info`, for even more verbose output: `PO_LOG_LEVEL=trace`. 
     
     Default: `error`.
  - `PO_IFACES`: Comma separated names of the network interfaces the program should listen on. Example: `PO_IFACES=enp0s3,enp0s8`. Optional, unless specified, it will listen on all network interfaces.
@@ -225,7 +233,9 @@ default:
 
   Optional, if not given, it is expected that `boot_server_ipv4` will be given instead to use an external TFTP server.
 
-- `boot_file`: The UNIX path to the file to be executed at boot time from within the TFTP service.
+  When this option is configured, it activates the TFTP service at port 69 on the configured `ifaces` and the specified directory in read only mode. No remote changes are allowed but ⚠️ _the directory becomes accessible to any client connecting_ ⚠️. TFTP doesn't support authentication.
+
+- `boot_file`: The UNIX path to the file to be executed at boot time from within the TFTP service. The boot file path is relative to the directory of the TFTP service. If the file is at `/tmp/boot/file.bin` on the local disk and the TFTP service is configured to serve from `/tmp/boot` then the `boot_file` specified should be just `file.bin`.
 - `boot_server_ipv4`: IPv4 address of TFTP service, for when it is desirable to use an external TFTP service. If not specified, a TFTP service will be started, serving files from the specified `tftp_server_dir`.
 - `default`: Holds the `boot_file` and, optionally, `boot_server_ipv4` to provide to the booting client devices.
 `boot_server_ipv4`.
@@ -261,7 +271,7 @@ We can add ENV variables to systemd processes by:
 ```BASH
 sudo systemctl edit preboot-oxide
 ```
-The above should open an editor to the `override.conf` for the service. In the file we add the enviornment definition:
+The above should open an editor to the `override.conf` for the service. In the file we add the environment definition:
 ```
 [Service]
 Environment="PO_LOG_LEVEL=preboot_oxide::conf=trace"
