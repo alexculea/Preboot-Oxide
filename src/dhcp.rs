@@ -83,17 +83,19 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
     let listen_ips = ["0.0.0.0:67", "255.255.255.255:68"];
     let max_sessions = server_config.get_max_sessions();
     let sessions = Arc::new(RwLock::new(SessionMap::new(max_sessions)));
-    let network_interfaces = NetworkInterface::show().context("Listing network interfaces")?;
+    let network_interfaces = NetworkInterface::show().context("Listing network interfaces")?
+        .into_iter()
+        .filter(|iface| {
+            // only listen on the configured network interfaces
+            server_config
+                .get_ifaces()
+                .map(|ifaces| ifaces.contains(&iface.name))
+                .unwrap_or(true) // or on all if no interfaces are configured
+        })
+        .collect::<Vec<NetworkInterface>>();
     let sockets: Arc<Vec<UdpSocket>> = Arc::new(
         network_interfaces
             .iter()
-            .filter(|iface| {
-                // only listen on the configured network interfaces
-                server_config
-                    .get_ifaces()
-                    .map(|ifaces| ifaces.contains(&iface.name))
-                    .unwrap_or(true) // or on all if no interfaces are configured
-            })
             .map(|iface| {
                 listen_ips
                     .iter()
@@ -260,8 +262,9 @@ async fn handle_dhcp_message(
     let msg_type = opts.msg_type().context("No message type found")?;
 
     debug!(
-        "Received from IP: {}, port: {}, DHCP Msg: {:?}",
+        "Received from IP: {} on {}, port: {}, DHCP Msg type: {:?}",
         peer.ip(),
+        receiving_interface.name,
         peer.port(),
         msg_type
     );
