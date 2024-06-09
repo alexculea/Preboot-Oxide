@@ -21,6 +21,10 @@ cp -R $(realpath "$SCRIPTS_DIR/../assets/deb/*") "$PACKAGE_DIR"
 chown -R root:root "$PACKAGE_DIR"
 chmod +x "$PACKAGE_DIR/bin/preboot-oxide"
 
+# Update the package version
+CONTROL_FILE="$PACKAGE_DIR/DEBIAN/control"
+sed -E -i "s/^Version: [0-9]+\.[0-9]+\.[0-9]+/Version: ${PACKAGE_VERSION}/" "$CONTROL_FILE"
+
 # Build the package using dpkg-deb
 dpkg-deb --build "$PACKAGE_DIR"
 
