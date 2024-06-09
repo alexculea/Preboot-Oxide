@@ -5,10 +5,10 @@
   
     ```BASH
     # donload the latest .deb package
-    wget https://github.com/alexcule/preboot-oxide/releases/latest/download/preboot-oxide.deb
+    wget https://github.com/alexcule/preboot-oxide/releases/latest/download/preboot-oxide-amd64.deb
 
     # install it
-    sudo dkpg -i preboot-oxide.deb
+    sudo dkpg -i preboot-oxide-amd64.deb
 
     # prepare a temporary boot folder (note this gets deleted at reboot, choose another location for permanent storage)
     mkdir -p /tmp/boot

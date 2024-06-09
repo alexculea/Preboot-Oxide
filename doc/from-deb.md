@@ -3,11 +3,11 @@
 ### Download & install
 ```BASH
     # donload the latest .deb package
-    wget https://github.com/alexculea/preboot-oxide/releases/latest/download/preboot-oxide.deb
+    wget https://github.com/alexculea/preboot-oxide/releases/latest/download/preboot-oxide-amd64.deb
 
     # install
-    sudo dkpg -i preboot-oxide.deb
-    rm preboot-oxide.deb # clean up temp file
+    sudo dkpg -i preboot-oxide-amd64.deb
+    rm preboot-oxide-amd64.deb # clean up temp file
 ```
 
 ### Configure

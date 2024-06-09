@@ -5,7 +5,11 @@ if [ "$EUID" -ne 0 ]
   exit
 fi
 
+if [ $SUDO_USER ]; then CALLING_USER=$SUDO_USER; else CALLING_USER=`whoami`; fi
+su - $CALLING_USER -c "cd `pwd`; cargo build --release; cd --";
+
 SCRIPTS_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+PROJECT_DIR=$(realpath "$SCRIPTS_DIR/..")
 
 # Read name and version from Cargo.toml
 PACKAGE_NAME=$(grep -m1 "name" Cargo.toml | awk -F '"' '{print $2}')
@@ -30,3 +34,6 @@ dpkg-deb --build "$PACKAGE_DIR"
 
 mv "${PACKAGE_DIR}.deb" ./
 rm -rf "$PACKAGE_DIR"
+
+# rename package to include architecture & keep the latest link working in the docs
+mv "${PACKAGE_NAME}_${PACKAGE_VERSION}.deb" "${PACKAGE_NAME}-amd64.deb"
