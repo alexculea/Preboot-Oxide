@@ -5,6 +5,6 @@ Maintainer: Alex Culea <16594531+alexculea@users.noreply.github.com>
 Standards-Version: 3.9.8
 Homepage: https://github.com/alexculea/Preboot-Oxide
 Package: preboot-oxide
-Architecture: all
+Architecture: amd64
 Description: PXE boot server for networks where a DHCP server already exists and should be kept separate.
-Version: 0.7.2
+Version: 1.9.11
