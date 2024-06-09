@@ -5,7 +5,7 @@
   
     ```BASH
     # donload the latest .deb package
-    wget https://github.com/alexcule/preboot-oxide/releases/latest/download/preboot-oxide-amd64.deb
+    wget https://github.com/alexculea/preboot-oxide/releases/latest/download/preboot-oxide-amd64.deb
 
     # install it
     sudo dkpg -i preboot-oxide-amd64.deb
