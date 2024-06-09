@@ -6,7 +6,7 @@ minor=0
 patch=0
 
 # Fetch all commit messages
-commits=$(git log --pretty=format:%s)
+commits=$(git log --reverse --pretty=format:%s)
 
 # Parse commit messages and update version numbers
 while IFS= read -r commit; do
