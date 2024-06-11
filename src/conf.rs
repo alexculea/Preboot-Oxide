@@ -31,6 +31,12 @@ pub struct ConfEntry {
     pub boot_server_ipv4: Option<Ipv4Addr>,
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct ConfEntryRef<'a> {
+    pub boot_file: Option<&'a String>,
+    pub boot_server_ipv4: Option<&'a Ipv4Addr>,
+}
+
 impl ConfEntry {
     pub fn merge(self, other_option: Option<&ConfEntry>) -> ConfEntry {
         let other = if let Some(other) = other_option {
@@ -43,6 +49,19 @@ impl ConfEntry {
         let boot_server_ipv4 = self.boot_server_ipv4.or(other.boot_server_ipv4);
 
         ConfEntry {
+            boot_file,
+            boot_server_ipv4,
+        }
+    }
+
+    pub fn merge_refs<'a>(&'a self, other: Option<&'a ConfEntry>) -> ConfEntryRef<'a> {
+        let boot_file = self.boot_file.as_ref().or(other.and_then(|o| o.boot_file.as_ref()));
+        let boot_server_ipv4 = self
+            .boot_server_ipv4
+            .as_ref()
+            .or(other.and_then(|o| o.boot_server_ipv4.as_ref()));
+
+        ConfEntryRef {
             boot_file,
             boot_server_ipv4,
         }
@@ -450,7 +469,7 @@ impl Conf {
         FIELD_MAP.get(key).unwrap_or(&key)
     }
 
-    pub fn get_from_doc(&self, doc: serde_json::Value) -> Result<Option<ConfEntry>> {
+    pub fn get_from_doc<'a>(&'a self, doc: serde_json::Value) -> Result<Option<ConfEntryRef>> {
         let matched_conf = self
             .match_map
             .as_ref()
@@ -468,8 +487,8 @@ impl Conf {
             });
 
         let result = matched_conf
-            .map(|cfg| cfg.clone())
-            .map(|cfg| cfg.merge(self.default.as_ref()))
+            // .map(|cfg| cfg.clone())
+            .map(|cfg| cfg.merge_refs(self.default.as_ref()))
             .inspect(|conf| trace!("Final result combined with default:\n{:#?}", conf))
             .or_else(|| {
                 trace!(

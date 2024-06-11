@@ -11,7 +11,7 @@ use async_std::sync::RwLock;
 use async_std::{net::UdpSocket, task};
 use log::{debug, error, info, trace};
 
-use crate::{conf::ConfEntry, util::bytes_to_mac_address};
+use crate::{conf::ConfEntryRef, util::bytes_to_mac_address};
 use dhcproto::v4::{
     Decodable, Decoder, DhcpOption, DhcpOptions, Encodable, Encoder, Flags, Message, MessageType,
     Opcode, OptionCode,
@@ -80,6 +80,7 @@ impl SessionMap {
 }
 
 pub async fn server_loop(server_config: Conf) -> Result<()> {
+    let server_config = Arc::new(server_config);
     let listen_ips = ["0.0.0.0:67", "255.255.255.255:68"];
     let max_sessions = server_config.get_max_sessions();
     let sessions = Arc::new(RwLock::new(SessionMap::new(max_sessions)));
@@ -123,7 +124,7 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
         for event in events.iter() {
             let task_sockets = Arc::clone(&sockets);
             let sessions = sessions.clone();
-            let server_config = server_config.clone();
+            let server_config = Arc::clone(&server_config);
             let network_interfaces = network_interfaces.clone();
             task::spawn(async move {
                 let _ = handle_dhcp_message(
@@ -440,7 +441,7 @@ fn socket2_to_async_std(socket: Socket) -> UdpSocket {
 
 fn add_boot_info_to_message(
     msg: &Message,
-    conf: &ConfEntry,
+    conf: &ConfEntryRef,
     client: &MacAddress,
     my_ipv4: Option<&Ipv4Addr>,
 ) -> Result<Message> {
@@ -451,16 +452,16 @@ fn add_boot_info_to_message(
         "Cannot determine boot file path for client having MAC address: {}.",
         bytes_to_mac_address(client)
     ))?;
-    let tfpt_srv_addr = conf.boot_server_ipv4.or(my_ipv4.copied()).ok_or(anyhow!(
+    let tfpt_srv_addr = conf.boot_server_ipv4.or(my_ipv4).ok_or(anyhow!(
         "Cannot determine TFTP server IPv4 address for client having MAC address: {}",
         bytes_to_mac_address(client)
     ))?;
 
     opts.insert(DhcpOption::BootfileName(boot_filename.as_bytes().to_vec()));
-    opts.insert(DhcpOption::TFTPServerAddress(tfpt_srv_addr));
-    opts.insert(DhcpOption::ServerIdentifier(tfpt_srv_addr));
+    opts.insert(DhcpOption::TFTPServerAddress(*tfpt_srv_addr));
+    opts.insert(DhcpOption::ServerIdentifier(*tfpt_srv_addr));
 
-    res.set_siaddr(tfpt_srv_addr)
+    res.set_siaddr(*tfpt_srv_addr)
         .set_fname_str(boot_filename)
         .set_opts(opts);
 
