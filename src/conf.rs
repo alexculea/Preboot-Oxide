@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use log::trace;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use std::{
     collections::HashMap,
     io::Read,
@@ -9,6 +10,7 @@ use std::{
     str::FromStr,
 };
 use yaml_rust2::Yaml;
+use std::fmt;
 
 pub type MacAddress = [u8; 6];
 type FieldConverter = for<'a> fn(&'a serde_json::Value) -> Result<String>;
@@ -47,14 +49,52 @@ impl ConfEntry {
     }
 }
 
+#[derive(Debug, Clone)]
+struct FieldValue {
+    value: String,
+    regex: Option<Regex>,
+}
+
+impl FieldValue {
+    pub fn from_string(value: String, regex: bool) -> Result<Self> {
+        let result = if regex {
+            Self {
+                value: value.clone(),
+                regex: Some(Regex::new(&value)?),
+            }
+        } else {
+            Self {
+                value: value,
+                regex: None,
+            }
+        };
+
+        Ok(result)
+    }
+
+    pub fn matches(&self, other: &String) -> bool {
+        if let Some(re) = self.regex.as_ref() {
+            re.is_match(other)
+        } else {
+            self.value == *other
+        }
+    }
+}
+
+impl fmt::Display for FieldValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
 #[derive(Clone, Debug)]
 enum MatchType {
     Any,
     All,
 }
 #[derive(Clone, Debug)]
-struct MatchEntry<T = String> {
-    fields_values: HashMap<String, T>,
+struct MatchEntry {
+    fields_values: HashMap<String, FieldValue>,
     conf: ConfEntry,
     match_type: MatchType,
     regex: bool,
@@ -200,7 +240,7 @@ impl Conf {
                     .unwrap_or_else(|| PathBuf::from(&YAML_FILENAME))
             });
 
-        Self::from_yaml_file(&path)
+        Self::from_yaml_file(&path).map_err(|e| anyhow!("{e}, from YAML file: {}", path.display()))
     }
 
     fn from_yaml_file(path: &Path) -> Result<Self> {
@@ -233,7 +273,8 @@ impl Conf {
                     match_entry
                         .iter()
                         .map(Self::match_entry_from_yaml)
-                        .collect::<Result<Vec<MatchEntry>>>()?,
+                        .collect::<Result<Vec<MatchEntry>>>()
+                        .map_err(|e| anyhow!("{e}, reading entries from 'match' section"))?,
                 )
             })
             .transpose()?;
@@ -260,30 +301,33 @@ impl Conf {
             })
             .unwrap_or(Ok(MatchType::All))?;
 
+        let regex = item["regex"].as_bool().unwrap_or(false);
         let fields_values = item["select"]
             .as_hash()
-            .map(|yaml_obj| -> Result<HashMap<String, String>> {
+            .map(|yaml_obj| -> Result<HashMap<String, FieldValue>> {
                 Result::Ok(
                     yaml_obj
                         .iter()
                         .map(|(key, value)| {
+                            let key_str = key.as_str()
+                                .ok_or(anyhow!("Expected a string key"))?
+                                .to_string();
                             Ok((
-                                key.as_str()
-                                    .ok_or(anyhow!("Expected a string key"))?
-                                    .to_string(),
-                                value
-                                    .as_str()
-                                    .ok_or(anyhow!("Expected a string value"))?
-                                    .to_string(),
+                                key_str.clone(),
+                                FieldValue::from_string(
+                                    value
+                                        .as_str()
+                                        .ok_or(anyhow!("Expected a string value"))?
+                                        .to_string(),
+                                    regex,
+                                ).map_err(|e| anyhow!("{e}, reading field \"{}\"", key_str))?,
                             ))
                         })
-                        .collect::<Result<HashMap<String, String>>>()?,
+                        .collect::<Result<HashMap<String, FieldValue>>>()?,
                 )
             })
             .transpose()?
             .ok_or(anyhow!("Expected a hash for select"))?;
-
-        let regex = item["regex"].as_bool().unwrap_or(false);
 
         Ok(MatchEntry {
             conf,
@@ -363,7 +407,7 @@ impl Conf {
     }
 
     fn is_match(doc: &serde_json::Value, match_entry: &MatchEntry) -> bool {
-        let matcher = |cfg_key: &String, cfg_value| {
+        let matcher = |cfg_key: &String, cfg_value: FieldValue| {
             let cfg_key = cfg_key.clone();
             move |doc_value: &serde_json::Value| {
                 let default_converter: FieldConverter =
@@ -372,19 +416,8 @@ impl Conf {
                     .get(cfg_key.as_str())
                     .unwrap_or(&default_converter);
                 let converted_value = doc_val_converter(doc_value).unwrap_or(doc_value.to_string());
-
-                let match_result = if match_entry.regex {
-                    let re = regex::Regex::new(cfg_value).unwrap();
-                    re.is_match(&converted_value)
-                } else {
-                    converted_value == cfg_value
-                };
-
-                let match_type = if match_entry.regex {
-                    "regex"
-                } else {
-                    "exact"
-                };
+                let match_result = cfg_value.matches(&converted_value);
+                let match_type = if match_entry.regex { "regex" } else { "exact" };
 
                 trace!("Matching {match_type} field {cfg_key}=\"{converted_value}\" to \"{cfg_value}\", matching = {match_result}");
                 match_result
@@ -398,7 +431,7 @@ impl Conf {
                         .get("opts")
                         .and_then(|opts| opts.get(key))
                         .and_then(|opts_key| opts_key.get(key)))
-                    .map(matcher(key, config_value))
+                    .map(matcher(key, config_value.clone()))
                     .unwrap_or(false)
             }),
             MatchType::All => match_entry.fields_values.iter().all(|(key, config_value)| {
@@ -407,7 +440,7 @@ impl Conf {
                         .get("opts")
                         .and_then(|opts| opts.get(key))
                         .and_then(|opts_key| opts_key.get(key)))
-                    .map(matcher(key, config_value))
+                    .map(matcher(key, config_value.clone()))
                     .unwrap_or(false)
             }),
         }
@@ -438,9 +471,11 @@ impl Conf {
             .map(|cfg| cfg.clone())
             .map(|cfg| cfg.merge(self.default.as_ref()))
             .inspect(|conf| trace!("Final result combined with default:\n{:#?}", conf))
-            .or_else(|| { 
-                trace!("No configuration found for this client in either 'default' or 'match' rules.");
-                None 
+            .or_else(|| {
+                trace!(
+                    "No configuration found for this client in either 'default' or 'match' rules."
+                );
+                None
             });
 
         Ok(result)

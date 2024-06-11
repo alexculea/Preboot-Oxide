@@ -32,10 +32,11 @@ fn main() -> Result<()> {
     let conf_path = std::env::var(format!("{env_prefix}CONF_PATH"))
         .map(std::path::PathBuf::from)
         .ok();
-    let server_config = Conf::from_yaml_config(conf_path.as_ref()).unwrap_or_else(|e| {
-        info!("Not loading YAML configuration: {}", e.to_string());
-        Conf::from(ProcessEnvConf::from_process_env())
-    });
+    let server_config = Conf::from_yaml_config(conf_path.as_ref())
+        .unwrap_or_else(|e| {
+            info!("Not loading YAML configuration: {}\nFalling back to environment variables.", e.to_string());
+            Conf::from(ProcessEnvConf::from_process_env())
+        });
     server_config.validate()?;
     spawn_tftp_service_async(&server_config)?;
 
