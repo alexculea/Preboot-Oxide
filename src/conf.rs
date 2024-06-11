@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use log::trace;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::fmt;
 use std::{
     collections::HashMap,
     io::Read,
@@ -10,7 +11,6 @@ use std::{
     str::FromStr,
 };
 use yaml_rust2::Yaml;
-use std::fmt;
 
 pub type MacAddress = [u8; 6];
 type FieldConverter = for<'a> fn(&'a serde_json::Value) -> Result<String>;
@@ -55,7 +55,10 @@ impl ConfEntry {
     }
 
     pub fn merge_refs<'a>(&'a self, other: Option<&'a ConfEntry>) -> ConfEntryRef<'a> {
-        let boot_file = self.boot_file.as_ref().or(other.and_then(|o| o.boot_file.as_ref()));
+        let boot_file = self
+            .boot_file
+            .as_ref()
+            .or(other.and_then(|o| o.boot_file.as_ref()));
         let boot_server_ipv4 = self
             .boot_server_ipv4
             .as_ref()
@@ -76,26 +79,21 @@ struct FieldValue {
 
 impl FieldValue {
     pub fn from_string(value: String, regex: bool) -> Result<Self> {
-        let result = if regex {
-            Self {
-                value: value.clone(),
-                regex: Some(Regex::new(&value)?),
-            }
-        } else {
-            Self {
-                value: value,
-                regex: None,
-            }
-        };
-
-        Ok(result)
+        Ok(Self {
+            value: value.clone(),
+            regex: if regex {
+                Some(value.try_into()?)
+            } else {
+                None
+            },
+        })
     }
 
     pub fn matches(&self, other: &String) -> bool {
         if let Some(re) = self.regex.as_ref() {
             re.is_match(other)
         } else {
-            self.value == *other
+            other.eq_ignore_ascii_case(other)
         }
     }
 }
@@ -328,7 +326,8 @@ impl Conf {
                     yaml_obj
                         .iter()
                         .map(|(key, value)| {
-                            let key_str = key.as_str()
+                            let key_str = key
+                                .as_str()
                                 .ok_or(anyhow!("Expected a string key"))?
                                 .to_string();
                             Ok((
@@ -339,7 +338,8 @@ impl Conf {
                                         .ok_or(anyhow!("Expected a string value"))?
                                         .to_string(),
                                     regex,
-                                ).map_err(|e| anyhow!("{e}, reading field \"{}\"", key_str))?,
+                                )
+                                .map_err(|e| anyhow!("{e}, reading field \"{}\"", key_str))?,
                             ))
                         })
                         .collect::<Result<HashMap<String, FieldValue>>>()?,

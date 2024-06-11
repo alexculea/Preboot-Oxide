@@ -111,7 +111,7 @@ tftp_server_dir: /where/the/boot/files/are
 match:
   # device #1
   - select:
-      ClientMacAddress: 08:00:27:E7:DE:FE # should always use capital letters
+      ClientMacAddress: 08:00:27:E7:DE:FE # this can also be lowercase
     conf:
       boot_file: /path/to/bootfile.efi
 
@@ -242,7 +242,7 @@ default:
 - `max_sessions`: Optional, defaults to 500. Represents the maximum number of allowed sessions at the same time. A session starts when an OFFER message is seen from DHCP to the booting client and ends when either the client ACKed or refused the request. Sessions older than 3 minutes are automatically removed. This is used to prevent filling the system memory in case of a flood of DHCP messages on the network.
 - `match`: List of entries to match, optional. Subfields:
 
-    - `select`: List of fields and values to match.
+    - `select`: List of fields and values to match. Unless `regex` is `true`, the matching is done by value, case insensitive.
         - Supported fields:
 
               ClientMacAddress
@@ -252,7 +252,20 @@ default:
               RequestedIpAddress
               ServerIdentifier
 
-    - `regex`: `true` or `false`. When `true`, the value matched will be interpreted as a regular expression. The engine used can be tested with https://regex101.com/ (select Rust from the Flavor on the left).
+        - Example:
+
+            ```YAML
+            match:
+            - select:
+                ClassIdentifier: PXEClient:Arch:00007:UNDI:003000
+                ClientMacAddress: 08:00:27:be:d8:91
+                HardwareType: eth
+                ...etc
+              conf:
+                boot_file: debian-installer/amd64/bootnetx64.efi
+            ```
+
+    - `regex`: `true` or `false`. When `true`, the value of the `select` field will be interpreted as a regular expression. The engine used can be tested with https://regex101.com/ (select Rust from the Flavor on the left).
     - `conf`: The resulting config when the client matched the `select`. Subfields:
 
       - `boot_file`: Same as above. If not specified, the `boot_file` in the `default` section will be used
