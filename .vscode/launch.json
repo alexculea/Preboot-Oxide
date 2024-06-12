@@ -19,7 +19,7 @@
       "sourceLanguages": ["rust"],
       "env": {
         "PO_CONF_PATH": "/home/alex/pxe-dhcp-rs/conf.yaml",
-        "PO_LOG_LEVEL": "preboot_oxide::conf=trace",
+        "PO_LOG_LEVEL": "preboot_oxide::dhcp=trace",
       }
     },
     {

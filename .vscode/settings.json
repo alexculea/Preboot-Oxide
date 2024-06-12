@@ -3,13 +3,20 @@
     "./Cargo.toml"
   ],
   "cSpell.words": [
+    "Bootfile",
     "chaddr",
+    "DGRAM",
+    "dhcproto",
     "htype",
+    "iface",
     "ifaces",
     "preboot",
     "riscv",
     "rpiboot",
+    "siaddr",
+    "tfpt",
     "uboot",
-    "uefi"
+    "uefi",
+    "yiaddr"
   ]
 }
