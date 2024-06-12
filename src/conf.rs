@@ -38,22 +38,6 @@ pub struct ConfEntryRef<'a> {
 }
 
 impl ConfEntry {
-    pub fn merge(self, other_option: Option<&ConfEntry>) -> ConfEntry {
-        let other = if let Some(other) = other_option {
-            other
-        } else {
-            return self;
-        };
-
-        let boot_file = self.boot_file.or(other.boot_file.clone());
-        let boot_server_ipv4 = self.boot_server_ipv4.or(other.boot_server_ipv4);
-
-        ConfEntry {
-            boot_file,
-            boot_server_ipv4,
-        }
-    }
-
     pub fn merge_refs<'a>(&'a self, other: Option<&'a ConfEntry>) -> ConfEntryRef<'a> {
         let boot_file = self
             .boot_file
@@ -80,12 +64,12 @@ struct FieldValue {
 impl FieldValue {
     pub fn from_string(value: String, regex: bool) -> Result<Self> {
         Ok(Self {
-            value: value.clone(),
             regex: if regex {
-                Some(value.try_into()?)
+                Some(Regex::new(&value)?)
             } else {
                 None
             },
+            value,
         })
     }
 
@@ -331,7 +315,7 @@ impl Conf {
                                 .ok_or(anyhow!("Expected a string key"))?
                                 .to_string();
                             Ok((
-                                key_str.clone(),
+                                key_str,
                                 FieldValue::from_string(
                                     value
                                         .as_str()
@@ -339,7 +323,12 @@ impl Conf {
                                         .to_string(),
                                     regex,
                                 )
-                                .map_err(|e| anyhow!("{e}, reading field \"{}\"", key_str))?,
+                                .map_err(|e| {
+                                    anyhow!(
+                                        "{e}, reading field \"{}\"",
+                                        key.as_str().unwrap_or_default()
+                                    )
+                                })?,
                             ))
                         })
                         .collect::<Result<HashMap<String, FieldValue>>>()?,
@@ -425,9 +414,8 @@ impl Conf {
         Ok(client_mac)
     }
 
-    fn is_match(doc: &serde_json::Value, match_entry: &MatchEntry) -> bool {
-        let matcher = |cfg_key: &String, cfg_value: FieldValue| {
-            let cfg_key = cfg_key.clone();
+    fn is_match<'a>(doc: &'a serde_json::Value, match_entry: &'a MatchEntry) -> bool {
+        let matcher = |cfg_key: &'a String, cfg_value: &'a FieldValue| {
             move |doc_value: &serde_json::Value| {
                 let default_converter: FieldConverter =
                     |v: &serde_json::Value| -> Result<String> { Ok(v.to_string()) };
@@ -450,7 +438,7 @@ impl Conf {
                         .get("opts")
                         .and_then(|opts| opts.get(key))
                         .and_then(|opts_key| opts_key.get(key)))
-                    .map(matcher(key, config_value.clone()))
+                    .map(matcher(key, config_value))
                     .unwrap_or(false)
             }),
             MatchType::All => match_entry.fields_values.iter().all(|(key, config_value)| {
@@ -459,7 +447,7 @@ impl Conf {
                         .get("opts")
                         .and_then(|opts| opts.get(key))
                         .and_then(|opts_key| opts_key.get(key)))
-                    .map(matcher(key, config_value.clone()))
+                    .map(matcher(key, config_value))
                     .unwrap_or(false)
             }),
         }
@@ -487,7 +475,6 @@ impl Conf {
             });
 
         let result = matched_conf
-            // .map(|cfg| cfg.clone())
             .map(|cfg| cfg.merge_refs(self.default.as_ref()))
             .inspect(|conf| trace!("Final result combined with default:\n{:#?}", conf))
             .or_else(|| {

@@ -1,5 +1,15 @@
 {
   "rust-analyzer.linkedProjects": [
     "./Cargo.toml"
+  ],
+  "cSpell.words": [
+    "chaddr",
+    "htype",
+    "ifaces",
+    "preboot",
+    "riscv",
+    "rpiboot",
+    "uboot",
+    "uefi"
   ]
 }
