@@ -8,7 +8,7 @@
     wget https://github.com/alexculea/preboot-oxide/releases/latest/download/preboot-oxide-amd64.deb
 
     # install it
-    sudo dkpg -i preboot-oxide-amd64.deb
+    sudo dpkg -i preboot-oxide-amd64.deb
 
     # prepare a temporary boot folder (note this gets deleted at reboot, choose another location for permanent storage)
     mkdir -p /tmp/boot
