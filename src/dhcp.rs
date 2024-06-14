@@ -17,7 +17,7 @@ use dhcproto::v4::{
     Opcode, OptionCode,
 };
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
-use polling::{Events, Poller as IOPoller};
+use polling::{Event, Events, Poller as IOPoller};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::conf::{Conf, MacAddress};
@@ -31,7 +31,44 @@ struct Session {
     pub discover_message: Option<Message>,
 }
 
-type SocketVec2DRes = Result<Vec<Vec<Socket>>>;
+pub struct Interface {
+    pub iface: NetworkInterface,
+    pub client: UdpSocket,
+    pub server: UdpSocket,
+}
+
+pub struct Interfaces {
+    pub interfaces: Vec<Interface>,
+}
+
+impl Interfaces {
+    pub fn sockets<'a>(&'a self) -> Vec<&'a UdpSocket> {
+        self.interfaces
+            .iter()
+            .map(|iface| vec![&iface.server, &iface.client])
+            .collect::<Vec<Vec<&'a UdpSocket>>>()
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    pub fn interface_from_event<'a>(&'a self, ev: &Event) -> Option<&'a Interface> {
+        let index = ev.key as usize / 2;
+        self.interfaces.get(index)
+    }
+
+    pub fn socket_from_event<'a>(&'a self, ev: &Event) -> Option<&'a UdpSocket> {
+        let sockets = self.sockets();
+
+        Some(sockets[ev.key as usize])
+    }
+}
+
+impl From<Vec<Interface>> for Interfaces {
+    fn from(interfaces: Vec<Interface>) -> Self {
+        Self { interfaces }
+    }
+}
 
 struct SessionMap {
     sessions: HashMap<u32, Session>,
@@ -95,48 +132,55 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
                 .unwrap_or(true) // or on all if no interfaces are configured
         })
         .collect::<Vec<NetworkInterface>>();
-    let sockets: Arc<Vec<UdpSocket>> = Arc::new(
+    let interfaces: Arc<Interfaces> = Arc::new(
         network_interfaces
             .iter()
             .map(|iface| {
-                listen_ips
-                    .iter()
-                    .map(|ip| socket_from_iface_ip(iface, ip))
-                    .collect()
+                let server = socket_from_iface_ip(iface, &listen_ips[0])?;
+                let client = socket_from_iface_ip(iface, &listen_ips[1])?;
+                Ok(Interface {
+                    iface: iface.clone(),
+                    client,
+                    server,
+                })
             })
-            .collect::<SocketVec2DRes>()
-            .context("Setting up network sockets on devices.")?
-            .into_iter()
-            .flatten()
-            .map(|socket| socket2_to_async_std(socket))
-            .collect(),
+            .collect::<Result<Vec<Interface>>>()?
+            .into(),
     );
 
     start_session_cleaner(Arc::clone(&sessions));
 
     let poller = IOPoller::new().context("Setting up OS IO polling.")?;
-    enlist_sockets_for_events(&poller, &sockets)?;
+    enlist_sockets_for_events(&poller, &interfaces)?;
 
     let mut events = Events::new();
     loop {
         let _ = poller.wait(&mut events, None)?; // blocks until we get notified by the OS
-        re_enlist_sockets_for_events(&sockets, &poller)?;
+        re_enlist_sockets_for_events(&poller, &interfaces)?;
 
         for event in events.iter() {
-            let task_sockets = Arc::clone(&sockets);
+            let task_interfaces = Arc::clone(&interfaces);
             let sessions = sessions.clone();
             let server_config = Arc::clone(&server_config);
-            let network_interfaces = network_interfaces.clone();
             task::spawn(async move {
-                let _ = handle_dhcp_message(
-                    event.key,
-                    task_sockets,
-                    network_interfaces,
-                    &server_config,
-                    sessions,
-                )
-                .await
-                .map_err(|e| error!("{}", e));
+                let incoming_iface = task_interfaces
+                    .interface_from_event(&event)
+                    .ok_or(anyhow!(
+                        "No interface found for event with key: {}. Very likely a bug.",
+                        event.key
+                    ))
+                    .unwrap();
+                let incoming_socket = task_interfaces
+                    .socket_from_event(&event)
+                    .ok_or(anyhow!(
+                        "No socket found for event with key: {}. Very likely a bug.",
+                        event.key
+                    ))
+                    .unwrap();
+                let _ =
+                    handle_dhcp_message(incoming_socket, incoming_iface, &server_config, sessions)
+                        .await
+                        .map_err(|e| error!("{}", e));
             });
         }
 
@@ -177,20 +221,22 @@ fn start_session_cleaner(active_sessions: Arc<RwLock<SessionMap>>) {
     });
 }
 
-fn enlist_sockets_for_events(poller: &IOPoller, sockets: &Arc<Vec<UdpSocket>>) -> Result<()> {
-    sockets
+fn enlist_sockets_for_events(poller: &IOPoller, interfaces: &Arc<Interfaces>) -> Result<()> {
+    interfaces
+        .sockets()
         .iter()
         .enumerate()
         .map(|(index, socket)| {
             // SAFETY: sources have to be deleted before the poller is dropped
-            unsafe { poller.add(socket, polling::Event::readable(index)) }
+            unsafe { poller.add(*socket, polling::Event::readable(index)) }
         })
         .collect::<std::io::Result<()>>()?;
     Ok(())
 }
 
-fn re_enlist_sockets_for_events(sockets: &Arc<Vec<UdpSocket>>, poller: &IOPoller) -> Result<()> {
-    sockets
+fn re_enlist_sockets_for_events(poller: &IOPoller, interfaces: &Arc<Interfaces>) -> Result<()> {
+    interfaces
+        .sockets()
         .iter()
         .enumerate()
         .map(|(index, socket)| {
@@ -206,7 +252,7 @@ fn re_enlist_sockets_for_events(sockets: &Arc<Vec<UdpSocket>>, poller: &IOPoller
     Ok(())
 }
 
-fn socket_from_iface_ip(iface: &NetworkInterface, ip: &&str) -> Result<Socket> {
+fn socket_from_iface_ip(iface: &NetworkInterface, ip: &&str) -> Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_broadcast(true)?;
     socket
@@ -222,25 +268,22 @@ fn socket_from_iface_ip(iface: &NetworkInterface, ip: &&str) -> Result<Socket> {
         ))?;
 
     info!("Listening on IP {ip} on device {}", iface.name);
-    Ok(socket)
+    Ok(socket2_to_async_std(socket))
 }
 
 async fn handle_dhcp_message(
-    receiving_socket_index: usize,
-    sockets: Arc<Vec<UdpSocket>>,
-    network_interfaces: Vec<NetworkInterface>,
+    receiving_socket: &UdpSocket,
+    incoming_interface: &Interface,
     server_config: &Conf,
     sessions: Arc<RwLock<SessionMap>>,
 ) -> Result<()> {
-    let receiving_socket = &sockets[receiving_socket_index];
     let mut rcv_data = [0u8; 576]; // https://www.rfc-editor.org/rfc/rfc1122, 3.3.3 Fragmentation
     let (bytes_read, peer) = receiving_socket.recv_from(&mut rcv_data).await?;
     if bytes_read == 0 {
         return Ok(());
     }
 
-    let receiving_interface_index = (receiving_socket_index / 2) as usize; // 2 sockets per interface
-    let receiving_interface = &network_interfaces[receiving_interface_index];
+    let receiving_interface = &incoming_interface.iface;
     let self_ipv4: &Ipv4Addr = receiving_interface
         .addr
         .iter()
@@ -299,6 +342,7 @@ async fn handle_dhcp_message(
             DHCP server responds first, which it should with an Offer that we
             duplicate below with adding the boot information to the message.
             */
+            debug!("Saved message {client_xid} to sessions.");
             return Ok(());
         }
         MessageType::Offer => {
@@ -386,6 +430,7 @@ async fn handle_dhcp_message(
             let mut sessions = sessions.write().await;
             sessions.remove(&client_xid);
             drop(sessions);
+            debug!("Session for XID: {client_xid} ended.");
 
             return if msg_type == MessageType::Decline {
                 bail!(
@@ -402,18 +447,19 @@ async fn handle_dhcp_message(
     let to_addr = "255.255.255.255:68";
     let mut buf = Vec::new();
     let mut e = Encoder::new(&mut buf);
+    let iface_name = &receiving_interface.name;
     response.encode(&mut e)?;
 
-    trace!("Responding with message: {:#?}", response);
+    debug!("Responding with message to {to_addr} on interface {iface_name}.");
+    trace!("{:#?}", response);
 
-    for socket in sockets.iter() {
-        socket.send_to(&buf, to_addr).await?;
-        debug!(
-            "DHCP reply ({:?}) sent to: {}",
-            response.opts().get(OptionCode::MessageType).unwrap(),
-            to_addr
-        );
-    }
+    let socket = &incoming_interface.server;
+    socket.send_to(&buf, to_addr).await?;
+    debug!(
+        "DHCP reply ({:?}) sent to: {}",
+        response.opts().get(OptionCode::MessageType).unwrap(),
+        to_addr
+    );
 
     Ok(())
 }
@@ -430,12 +476,12 @@ fn matches_filter(msg: &Message) -> bool {
     if !matches {
         debug!(
             "DHCP message ignored due to not matching filter. \
-          Required: has_boot_file_name: {has_boot_file_name}, is_request: {is_request}\
+          Required: has_boot_file_name: {has_boot_file_name}, is_request: {is_request} \
           is_offer: {is_offer}, is_ack: {is_ack}, is_discover: {is_discover}"
         );
+    } else {
+        debug!("Eligible DHCP message found.");
     }
-
-    trace!("Eligible DHCP message found, intercepting.");
 
     matches
 }
