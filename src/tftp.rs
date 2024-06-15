@@ -1,9 +1,10 @@
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::Path;
 
 use anyhow::{Context, Error};
 use async_std::task;
 use async_tftp::server::TftpServerBuilder;
-use log::info;
+use log::{error, info};
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 
 use crate::conf::Conf;
@@ -11,6 +12,11 @@ use crate::Result;
 
 pub fn spawn_tftp_service_async(conf: &Conf) -> Result<()> {
     if let Some(tftp_path) = conf.get_tftp_serve_path() {
+        let dir = Path::new(&tftp_path);
+        if !dir.exists() || !dir.is_dir() {
+            return Err(anyhow!("TFTP path does not exist or is not directory: {:?}", dir));
+        }
+
         let network_interfaces = NetworkInterface::show().context("Listing network interfaces")?;
         let listen_ips: Vec<Ipv4Addr> = network_interfaces
             .iter()
@@ -35,7 +41,10 @@ pub fn spawn_tftp_service_async(conf: &Conf) -> Result<()> {
         for ip in listen_ips {
             let tftp_dir = tftp_path.clone();
             task::spawn(async move {
-                let mut tftp_builder = TftpServerBuilder::with_dir_ro(tftp_dir.clone())?;
+                let mut tftp_builder = TftpServerBuilder::with_dir_ro(tftp_dir.clone())
+                    .inspect_err(|err| {
+                        error!("TFTP error: {:?}", err);
+                    })?;
                 tftp_builder = tftp_builder.bind(SocketAddr::new(ip.into(), 69));
                 let server = tftp_builder.build().await?;
 
