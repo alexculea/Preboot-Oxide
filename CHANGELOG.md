@@ -48,3 +48,5 @@
 - fix: Ignore discovery messages that don't request boot information (418babe)
 - fix: Add timeouts to session storage contention to avoid deadlocks (570be0c)
 - chore: Release scripts improvements (7b2f1a0)
+## Version 1.4.9
+- fix: Abort if TFTP path doesn't exist (4812241)
