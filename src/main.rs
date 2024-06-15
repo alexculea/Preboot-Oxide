@@ -36,8 +36,8 @@ fn main() -> Result<()> {
     let env_prefix = crate::conf::ENV_VAR_PREFIX;
     let log_level = std::env::var(format!("{env_prefix}LOG_LEVEL")).unwrap_or("error".into());
 
-    pretty_env_logger::formatted_timed_builder()
-        .parse_filters(&log_level)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
+        // .parse_filters(&log_level)
         .init();
 
     let conf_path = std::env::var(format!("{env_prefix}CONF_PATH"))
