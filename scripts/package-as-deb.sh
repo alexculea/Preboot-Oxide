@@ -1,9 +1,10 @@
 #!/bin/bash
 
-if [ "$EUID" -ne 0 ]
-  then echo "Please run as root"
-  exit
+if [ "$EUID" != 0 ]; then
+  sudo "$0" "$@"
+  exit $?
 fi
+
 
 if [ $SUDO_USER ]; then CALLING_USER=$SUDO_USER; else CALLING_USER=`whoami`; fi
 su - $CALLING_USER -c "cd `pwd`; cargo build --release; cd --";

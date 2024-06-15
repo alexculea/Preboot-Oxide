@@ -76,10 +76,7 @@ for tag in $(git tag); do
   fi
 
   # Parse tag name to semantic version
-  echo "Tag $tag";
-  # if [[ $tag =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(\-[A-z0-9]+)?$ ]]; then
   if [[ $tag =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(.+)?$ ]]; then
-    echo "Regex match!";
     major=${BASH_REMATCH[1]}
     minor=${BASH_REMATCH[2]}
     patch=${BASH_REMATCH[3]}
@@ -88,15 +85,12 @@ for tag in $(git tag); do
 
     compare_versions $CURRENT_VER $NEWEST_VERSION;
     CMP_RES=$?;
-    echo "Compare result: $CMP_RES";
     if [[ $CMP_RES == 0 ]]; then
-      printf "Newest version: $CURRENT_VER\n"
       NEWEST_VERSION=$CURRENT_VER
     fi
     
   fi
 done
-
 
 compare_versions $VERSION $NEWEST_VERSION;
 if [[ $? == 1 ]]; then
@@ -104,7 +98,7 @@ if [[ $? == 1 ]]; then
   exit 1
 fi
 
-
+echo "Last version: $NEWEST_VERSION, new version: $VERSION";
 read -p "Do you want to continue updating Cargo.toml? (y/n): " answer
 if [[ $answer == "y" ]]; then
   sed -i "s/^version = .*/version = \"$VERSION\"/" $(realpath "$SCRIPTS_DIR/../Cargo.toml")
@@ -120,15 +114,19 @@ if [[ $answer == "y" ]]; then
   echo "CHANGELOG.md updated successfully"
 fi
 
-read -p "Do you want to commit the changes? (y/n): " answer
+echo "Operations to be performed:"
+echo -e "- Will add to git:\n\tCargo.toml\n\tCargo.lock\n\tCHANGELOG.md"
+echo "- Will commit with message: \"Release version $VERSION\"";
+echo "- Will tag the commit with \"v$VERSION\""
+read -p "Confirm operation? (y/n)" answer
 if [[ $answer == "y" ]]; then
-  git add $(realpath "$SCRIPTS_DIR/../Cargo.toml") $(realpath "$SCRIPTS_DIR/../CHANGELOG.md")
+  git add $(realpath "$SCRIPTS_DIR/../Cargo.toml") $(realpath "$SCRIPTS_DIR/../Cargo.lock") $(realpath "$SCRIPTS_DIR/../CHANGELOG.md")
   git commit -m "Release version $VERSION"
   git tag "v$VERSION"
   echo "Changes committed successfully"
 fi
 
-read -p "Do you want to push the changes? (y/n): " answer
+read -p "Do you want to push to origin master? (y/n): " answer
 if [[ $answer == "y" ]]; then
   git push origin master
   git push origin "v$VERSION"
@@ -138,7 +136,7 @@ fi
 read -p "Do you want to build the packages? (y/n): " answer
 if [[ $answer == "y" ]]; then
   cargo build --release
-  ."$SCRIPTS_DIR/package-as-deb.sh"
+  exec "$SCRIPTS_DIR/package-as-deb.sh"
 fi
 
 exit 0
