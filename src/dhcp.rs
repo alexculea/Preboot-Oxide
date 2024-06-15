@@ -337,6 +337,15 @@ async fn handle_dhcp_message(
 
     let response = match msg_type {
         MessageType::Discover => {
+            let has_boot_info_request = match incoming_msg.opts().get(OptionCode::ParameterRequestList) {
+                Some(DhcpOption::ParameterRequestList(params)) => params.contains(&OptionCode::BootfileName),
+                _ => false,
+            };
+
+            if !has_boot_info_request {
+                return Ok(())
+            }
+
             let mut sessions =
                 timeout(std::time::Duration::from_millis(500), sessions.write()).await?;
             let mut session = sessions.remove(&client_xid).unwrap_or(Session {
