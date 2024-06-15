@@ -8,6 +8,7 @@ license = "AGPL-3.0-only"
 anyhow = "1.0.79"
 async-std = "1.12.0"
 async-tftp = "0.3.6"
+clap = { version = "4.5.7", features = ["derive", "cargo"] }
 dhcproto = { version = "0.11.0", features = ["serde"] }
 dirs = "5.0.1"
 dotenv = "0.15.0"
