@@ -15,9 +15,14 @@ use crate::{
 use anyhow::Context;
 use async_std::task;
 use log::{debug, info};
+use single_instance::SingleInstance;
 pub type Result<T> = anyhow::Result<T, anyhow::Error>;
 
 fn main() -> Result<()> {
+    let instance = SingleInstance::new("preboot-oxide")?;
+    if instance.is_single() {
+        return Err(anyhow!("Another instance is already running"));
+    }
     let mut dot_env_path = std::env::current_exe().unwrap_or_default();
     dot_env_path.set_file_name(".env");
 
