@@ -43,3 +43,8 @@
 - doc: Fix type in quick start guide (8a5d035)
 - chore: Always rebuild when packaging as .deb, incl. CPU arch in the filename and update docs (ff83824)
 - chore: Correct target architecture in .deb package (503ffff)
+## Version 1.4.8
+- refactor: Remove unnecessary pretty_env_logger & ensure logs are always added for the release profile (910b45f)
+- fix: Ignore discovery messages that don't request boot information (418babe)
+- fix: Add timeouts to session storage contention to avoid deadlocks (570be0c)
+- chore: Release scripts improvements (7b2f1a0)
