@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Ok};
-use async_std::sync::RwLock;
+use async_std::{future::timeout, sync::RwLock};
 use async_std::{net::UdpSocket, task};
 use log::{debug, error, info, trace};
 
@@ -194,7 +194,13 @@ fn start_session_cleaner(active_sessions: Arc<RwLock<SessionMap>>) {
             task::sleep(Duration::from_secs(60)).await;
             let now = std::time::SystemTime::now();
             let mut items_to_remove = Vec::with_capacity(50);
-            let sessions = active_sessions.read().await;
+            let sessions = timeout(std::time::Duration::from_millis(500), active_sessions.read()).await;
+            if sessions.is_err() {
+                debug!("Session cleaner could not acquire read lock. Skipping.");
+                continue;
+            }
+            let sessions = sessions.unwrap();
+
             for (_, (client_xid, session)) in sessions.iter().enumerate() {
                 if let Some(age) = now.duration_since(session.start_time).ok() {
                     if age > Duration::from_secs(120) {
@@ -207,7 +213,13 @@ fn start_session_cleaner(active_sessions: Arc<RwLock<SessionMap>>) {
                 continue;
             }
 
-            let mut sessions = active_sessions.write().await;
+            let sessions = timeout(std::time::Duration::from_millis(500), active_sessions.write()).await;
+            if sessions.is_err() {
+                debug!("Session cleaner could not acquire write lock. Skipping.");
+                continue;
+            }
+            let mut sessions = sessions.unwrap();
+
             sessions.retain(|client_xid, _| !items_to_remove.contains(&client_xid));
             drop(sessions); // unlock the RwLock
                             // would have been dropped anyway at the end of the loop
@@ -325,7 +337,8 @@ async fn handle_dhcp_message(
 
     let response = match msg_type {
         MessageType::Discover => {
-            let mut sessions = sessions.write().await;
+            let mut sessions =
+                timeout(std::time::Duration::from_millis(500), sessions.write()).await?;
             let mut session = sessions.remove(&client_xid).unwrap_or(Session {
                 client_ip: None,
                 subnet: None,
@@ -346,7 +359,8 @@ async fn handle_dhcp_message(
             return Ok(());
         }
         MessageType::Offer => {
-            let mut sessions = sessions.write().await;
+            let mut sessions =
+                timeout(std::time::Duration::from_millis(500), sessions.write()).await?;
             let session = sessions.get_mut(&client_xid);
             if session.is_none() {
                 debug!(
@@ -378,7 +392,8 @@ async fn handle_dhcp_message(
             add_boot_info_to_message(msg, &client_cfg, &client_mac_address_str, Some(&self_ipv4))?
         }
         MessageType::Request => {
-            let sessions = sessions.read().await;
+            let sessions =
+                timeout(std::time::Duration::from_millis(500), sessions.read()).await?;
             let session = sessions.get(&client_xid);
             if session.is_none() {
                 info!("No session found for client {client_mac_address_str}, XID: {client_xid}.");
@@ -427,7 +442,8 @@ async fn handle_dhcp_message(
             ack
         }
         MessageType::Decline | MessageType::Ack => {
-            let mut sessions = sessions.write().await;
+            let mut sessions = 
+                timeout(std::time::Duration::from_millis(500), sessions.write()).await?;
             sessions.remove(&client_xid);
             drop(sessions);
             debug!("Session for XID: {client_xid} ended.");

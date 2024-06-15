@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::trace;
+use log::{info, trace};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::fmt;
@@ -242,6 +242,7 @@ impl Conf {
             });
 
         Self::from_yaml_file(&path).map_err(|e| anyhow!("{e}, from YAML file: {}", path.display()))
+            .inspect(|_| info!("Loaded configuration from YAML file {}", path.display()))
     }
 
     fn from_yaml_file(path: &Path) -> Result<Self> {
