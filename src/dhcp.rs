@@ -17,7 +17,7 @@ use dhcproto::v4::{
     Opcode, OptionCode,
 };
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
-use polling::{Event, Events, Poller as IOPoller};
+use polling::{Event, Events, Poller as IOPoller}; // TODO: Migrate to mio
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::conf::{Conf, MacAddress};
@@ -150,13 +150,18 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
 
     start_session_cleaner(Arc::clone(&sessions));
 
-    let poller = IOPoller::new().context("Setting up OS IO polling.")?;
+    let poller = Arc::new(IOPoller::new().context("Setting up OS IO polling.")?);
     enlist_sockets_for_events(&poller, &interfaces)?;
-
-    let mut events = Events::new();
+    
     loop {
-        let _ = poller.wait(&mut events, None)?; // blocks until we get notified by the OS
-        re_enlist_sockets_for_events(&poller, &interfaces)?;
+        let closure_poller = Arc::clone(&poller);
+        let mut events = async_std::task::spawn_blocking(move || { 
+            let mut events = Events::new();
+            closure_poller.wait(&mut events, None)?;
+
+            Ok(events)
+         }).await?; // blocks until we get notified by the OS
+         re_enlist_sockets_for_events(&poller, &interfaces)?;
 
         for event in events.iter() {
             let task_interfaces = Arc::clone(&interfaces);
