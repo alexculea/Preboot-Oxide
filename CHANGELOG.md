@@ -50,3 +50,8 @@
 - chore: Release scripts improvements (7b2f1a0)
 ## Version 1.4.9
 - fix: Abort if TFTP path doesn't exist (4812241)
+## Version 1.4.11
+- fix: Consolidate TFTP to the same async runtime improving performance and fixing high memory usage when serving files (e3c75c2)
+- chore: Fix small bug in release script (1e18a4a)
+- chore: add POC TFTP testing script (475bfc4)
+- fix: Ensure OS socket polling doesn't block async thread (4c5a5fd)
