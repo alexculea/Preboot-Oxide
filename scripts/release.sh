@@ -38,7 +38,7 @@ compare_versions() {
   # Compare patch versions
   if [[ $v1_patch -gt v2_patch ]]; then
     #echo "Version $version1 is greater than $version2"
-    echo 0
+    return 0
   elif [[ $v1_patch -lt v2_patch ]]; then
     #echo "Version $version1 is less than $version2"
     return 1
