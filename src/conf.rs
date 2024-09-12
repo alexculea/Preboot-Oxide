@@ -148,6 +148,25 @@ static FIELD_CONVERTERS: FieldConverterMap = Lazy::new(|| {
                     .unwrap_or(Ok(String::default()))
             },
         ),
+        (
+            "ClientMachineIdentifier",
+            |input: &serde_json::Value| -> Result<String> {
+                input
+                    .as_object()
+                    .map(|dict| dict.get("ClientMachineIdentifier"))
+                    .flatten()
+                    .map(|value| value.as_array())
+                    .flatten()
+                    .map(|arr| {
+                        Ok(arr
+                            .iter()
+                            .map(|item| Ok(char::try_from(item.as_u64().unwrap_or(0) as u32)?.to_string()))
+                            .collect::<Result<Vec<String>>>()?
+                            .join("."))
+                    })
+                    .unwrap_or(Ok(String::default()))
+            },
+        ),
     ])
 });
 
