@@ -1,10 +1,13 @@
 # Roadmap
 
-Unordered list of features planned:
-
+- Remove the need for IP configuration, refer from the IP of the source network interface instead ✅
+- Add support for serving TFTP ✅
+- Add service configuration template file for systemd ✅
+- Ensure DHCP service can run alongside dhclient and isc-dhcp-server ✅
 - Mitigate DOS vulnerabilities by ensuring sessions are limited in number and periodically removing old session entries ✅
-- Add support for specifying the YAML configuration file path through process ENV. ✅
-- Add support for configuring OS boot archive over HTTP
-- Ensure process ENV variables take precedence over YAML configuration
+- Add support for YAML configuration ✅
+- Allow configuring listen interfaces for the TFTP service ✅
 - Good coverage of automated integration testing
-- Allow configuring listen interfaces for the TFTP service
+- Publish APT package repositories
+- Provide RPM packages at every release
+
