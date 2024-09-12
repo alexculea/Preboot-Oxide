@@ -1,4 +1,4 @@
-# Roadmap
+# Roadmap (random order)
 
 - Remove the need for IP configuration, refer from the IP of the source network interface instead ✅
 - Add support for serving TFTP ✅
@@ -10,4 +10,5 @@
 - Good coverage of automated integration testing
 - Publish APT package repositories
 - Provide RPM packages at every release
+- Match 90% of the `tftp-hpa` TFTP file server performance
 
