@@ -21,10 +21,7 @@ pub fn spawn_tftp_service_async(conf: &Conf) -> Result<()> {
     if let Some(tftp_path) = conf.get_tftp_serve_path() {
         let dir = Path::new(&tftp_path);
         if !dir.exists() || !dir.is_dir() {
-            return Err(anyhow!(
-                "TFTP path does not exist or is not directory: {:?}",
-                dir
-            ));
+            bail!("TFTP path does not exist or is not directory: {:?}", dir);
         }
 
         let network_interfaces = NetworkInterface::show().context("Listing network interfaces")?;

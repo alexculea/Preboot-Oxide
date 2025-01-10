@@ -160,7 +160,9 @@ static FIELD_CONVERTERS: FieldConverterMap = Lazy::new(|| {
                     .map(|arr| {
                         Ok(arr
                             .iter()
-                            .map(|item| Ok(char::try_from(item.as_u64().unwrap_or(0) as u32)?.to_string()))
+                            .map(|item| {
+                                Ok(char::try_from(item.as_u64().unwrap_or(0) as u32)?.to_string())
+                            })
                             .collect::<Result<Vec<String>>>()?
                             .join("."))
                     })
@@ -240,13 +242,11 @@ impl Conf {
             .unwrap_or(false);
 
         if !has_external_tftp_server && !has_tftp_path {
-            return Err(anyhow!(
-                "No TFTP server path or external TFTP server configured."
-            ));
+            bail!("No TFTP server path or external TFTP server configured.");
         }
 
         if !has_boot_filename {
-            return Err(anyhow!("No boot filename configured."));
+            bail!("No boot filename configured.");
         }
         Ok(())
     }
@@ -260,7 +260,8 @@ impl Conf {
                     .unwrap_or_else(|| PathBuf::from(&YAML_FILENAME))
             });
 
-        Self::from_yaml_file(&path).map_err(|e| anyhow!("{e}, from YAML file: {}", path.display()))
+        Self::from_yaml_file(&path)
+            .map_err(|e| anyhow!("{e}, from YAML file: {}", path.display()))
             .inspect(|_| info!("Loaded configuration from YAML file {}", path.display()))
     }
 
