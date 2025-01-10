@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     net::{Ipv4Addr, SocketAddrV4},
     os::fd::{AsRawFd, BorrowedFd},
     sync::Arc,
@@ -22,6 +21,9 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::conf::{Conf, MacAddress};
 use crate::Result;
+use crate::util::QuotaMap;
+
+type SessionMap = QuotaMap<u32, Session>;
 
 struct Session {
     pub client_ip: Option<Ipv4Addr>,
@@ -67,52 +69,6 @@ impl Interfaces {
 impl From<Vec<Interface>> for Interfaces {
     fn from(interfaces: Vec<Interface>) -> Self {
         Self { interfaces }
-    }
-}
-
-struct SessionMap {
-    sessions: HashMap<u32, Session>,
-    max_sessions: u64,
-}
-
-impl SessionMap {
-    fn new(max_sessions: u64) -> Self {
-        Self {
-            sessions: Default::default(),
-            max_sessions,
-        }
-    }
-
-    pub fn insert(&mut self, key: u32, value: Session) -> Result<()> {
-        if u64::try_from(self.sessions.len())? > self.max_sessions {
-            bail!("Max sessions of {} reached. Ignoring.", self.max_sessions)
-        }
-
-        self.sessions.insert(key, value);
-        Ok(())
-    }
-
-    pub fn remove(&mut self, key: &u32) -> Option<Session> {
-        self.sessions.remove(key)
-    }
-
-    pub fn get(&self, key: &u32) -> Option<&Session> {
-        self.sessions.get(key)
-    }
-
-    pub fn get_mut(&mut self, key: &u32) -> Option<&mut Session> {
-        self.sessions.get_mut(key)
-    }
-
-    pub fn retain<F>(&mut self, f: F)
-    where
-        F: FnMut(&u32, &mut Session) -> bool,
-    {
-        self.sessions.retain(f);
-    }
-
-    pub fn iter(&self) -> std::collections::hash_map::Iter<u32, Session> {
-        self.sessions.iter()
     }
 }
 
