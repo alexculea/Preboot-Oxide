@@ -91,9 +91,7 @@ echo "$content" > ./target/release/.env
 
 In short, [YAML](https://yaml.org/) is a static configuration format similar to JSON that uses tabs instead of braces (`{}`). Simple [tutorial](https://www.redhat.com/sysadmin/yaml-beginners).
 
-The YAML content is loaded from `PO_CONF_PATH` env variable or from  `~/.config/preboot-oxide/preboot-oxide.yaml`. There is a sample file at the project root [here](../sample.preboot-oxide.yaml), reading on is recommended for a better understanding.
-
-This .yaml file config will override process ENV variables. When running as service with `systemd`, the location will correspond to the `root` user at `/root/.config/preboot-oxide/preboot-oxide.yaml`. It is possible to override the path using the `PO_CONF_PATH` env variable. [This SO answer](https://serverfault.com/a/413408) describes how to set env variables for systemd services.
+The YAML config is loaded from `PO_CONF_PATH` env variable or from  `~/.config/preboot-oxide/preboot-oxide.yaml`. The .yaml file config will override process ENV variables. When running as service with `systemd`, the location will correspond to the `root` user at `/root/.config/preboot-oxide/preboot-oxide.yaml`. It is possible to override the path using the `PO_CONF_PATH` env variable. [This SO answer](https://serverfault.com/a/413408) describes how to set env variables for systemd services.
 
 Conceptually, all PXE booting devices require only two parameters. The path of the executable file to run at boot time and where to get that file from. The first is a Unix style path, the 2nd is an IPv4 address where the Trivial File Transfer Protocol (TFTP) service is available to serve the file.
 
