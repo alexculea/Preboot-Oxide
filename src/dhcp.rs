@@ -351,6 +351,11 @@ async fn handle_dhcp_message(
                 return Ok(())
             }
 
+            info!(
+                "Received DISCOVER boot request from client {client_mac_address_str} with XID: {client_xid} on interface {}.",
+                receiving_interface.name,
+            );
+
             let mut sessions =
                 timeout(std::time::Duration::from_millis(500), sessions.write()).await?;
             let mut session = sessions.remove(&client_xid).unwrap_or(Session {
@@ -410,7 +415,7 @@ async fn handle_dhcp_message(
                 timeout(std::time::Duration::from_millis(500), sessions.read()).await?;
             let session = sessions.get(&client_xid);
             if session.is_none() {
-                info!("No session found for client {client_mac_address_str}, XID: {client_xid}.");
+                debug!("No session found for client {client_mac_address_str}, XID: {client_xid}, ignoring.");
                 return Ok(());
             }
             let session = session.unwrap();
@@ -480,7 +485,7 @@ async fn handle_dhcp_message(
     let iface_name = &receiving_interface.name;
     response.encode(&mut e)?;
 
-    debug!("Responding with message to {to_addr} on interface {iface_name}.");
+    info!("Responding with message to {to_addr} on interface {iface_name}.");
     trace!("{:#?}", response);
 
     let socket = &incoming_interface.server;

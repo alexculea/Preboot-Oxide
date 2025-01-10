@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Error};
 use async_std::task;
 use async_tftp::{async_trait, packet, server::TftpServerBuilder, Error as TftpError};
-use log::info;
+use log::{debug, error, info};
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 
 use crate::conf::Conf;
@@ -77,7 +77,6 @@ pub struct DirHandler {
     serve_wrq: bool,
 }
 
-
 #[allow(unused)]
 pub enum DirHandlerMode {
     /// Serve only read requests.
@@ -133,6 +132,7 @@ impl async_tftp::server::Handler for DirHandler {
         path: &Path,
     ) -> TftpResult<(Self::Reader, Option<u64>), packet::Error> {
         if !self.serve_rrq {
+            debug!("TFTP read request denied: {:?}", path);
             return Err(packet::Error::IllegalOperation);
         }
 
@@ -140,11 +140,15 @@ impl async_tftp::server::Handler for DirHandler {
 
         // Send only regular files
         if !path.is_file() {
+            error!("File not found or path is not a file: {:?}", path);
             return Err(packet::Error::FileNotFound);
         }
 
-        let (reader, len) = open_file_ro(path.clone()).await?;
-        trace!("TFTP sending file: {}", path.display());
+        let (reader, len) = open_file_ro(path.clone())
+            .await
+            .inspect_err(|e| error!("File open error {:?}, path: {:?}", e, path))?;
+
+        info!("Serving file: {}", path.display());
 
         Ok((reader, len))
     }
@@ -156,6 +160,7 @@ impl async_tftp::server::Handler for DirHandler {
         size: Option<u64>,
     ) -> TftpResult<Self::Writer, packet::Error> {
         if !self.serve_wrq {
+            debug!("TFTP write request denied: {:?}", path);
             return Err(packet::Error::IllegalOperation);
         }
 
@@ -163,9 +168,8 @@ impl async_tftp::server::Handler for DirHandler {
 
         let path_clone = path.clone();
         let file = open_file_wo(path_clone, size).await?;
-        // let writer = Unblock::new(file);
 
-        trace!("TFTP receiving file: {}", path.display());
+        info!("TFTP receiving file: {}", path.display());
 
         Ok(file)
     }

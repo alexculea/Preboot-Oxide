@@ -32,7 +32,6 @@ fn main() -> Result<()> {
         .unwrap_or("error".into());
 
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
-        // .parse_filters(&log_level)
         .init();
 
     let conf_path = env::var(format!("{ENV_VAR_PREFIX}CONF_PATH"))
