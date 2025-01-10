@@ -20,9 +20,11 @@ use polling::{Event, Events, Poller as IOPoller}; // TODO: Migrate to mio
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::conf::{Conf, MacAddress};
-use crate::Result;
 use crate::util::QuotaMap;
+use crate::Result;
 
+/// The contention timeout for acquiring a lock on the session map
+const LOCK_TIMEOUT: Duration = Duration::from_millis(500);
 type SessionMap = QuotaMap<u32, Session>;
 
 struct Session {
@@ -74,9 +76,8 @@ impl From<Vec<Interface>> for Interfaces {
 
 pub async fn server_loop(server_config: Conf) -> Result<()> {
     let server_config = Arc::new(server_config);
+
     let listen_ips = ["0.0.0.0:67", "255.255.255.255:68"];
-    let max_sessions = server_config.get_max_sessions();
-    let sessions = Arc::new(RwLock::new(SessionMap::new(max_sessions)));
     let network_interfaces = NetworkInterface::show()
         .context("Listing network interfaces")?
         .into_iter()
@@ -104,20 +105,23 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
             .into(),
     );
 
-    start_session_cleaner(Arc::clone(&sessions));
+    let max_sessions = server_config.get_max_sessions();
+    let sessions = Arc::new(RwLock::new(SessionMap::new(max_sessions)));
+    task::spawn(session_cleaner_entrypoint(Arc::clone(&sessions)));
 
     let poller = Arc::new(IOPoller::new().context("Setting up OS IO polling.")?);
     enlist_sockets_for_events(&poller, &interfaces)?;
-    
+
     loop {
         let closure_poller = Arc::clone(&poller);
-        let mut events = async_std::task::spawn_blocking(move || { 
+        let mut events = async_std::task::spawn_blocking(move || {
             let mut events = Events::new();
             closure_poller.wait(&mut events, None)?;
 
             Ok(events)
-         }).await?; // blocks until we get notified by the OS
-         re_enlist_sockets_for_events(&poller, &interfaces)?;
+        })
+        .await?; // blocks until we get notified by the OS
+        re_enlist_sockets_for_events(&poller, &interfaces)?;
 
         for event in events.iter() {
             let task_interfaces = Arc::clone(&interfaces);
@@ -149,49 +153,48 @@ pub async fn server_loop(server_config: Conf) -> Result<()> {
     }
 }
 
-fn start_session_cleaner(active_sessions: Arc<RwLock<SessionMap>>) {
-    task::spawn(async move {
-        loop {
-            task::sleep(Duration::from_secs(60)).await;
-            let now = std::time::SystemTime::now();
-            let mut items_to_remove = Vec::with_capacity(50);
-            let sessions = timeout(std::time::Duration::from_millis(500), active_sessions.read()).await;
-            if sessions.is_err() {
-                debug!("Session cleaner could not acquire read lock. Skipping.");
-                continue;
-            }
-            let sessions = sessions.unwrap();
+async fn session_cleaner_entrypoint(active_sessions: Arc<RwLock<SessionMap>>) {
+    loop {
+        task::sleep(Duration::from_secs(60)).await;
+        let now = std::time::SystemTime::now();
+        let mut items_to_remove = Vec::with_capacity(50);
+        let sessions = timeout(LOCK_TIMEOUT, active_sessions.read()).await;
+        if sessions.is_err() {
+            debug!("Session cleaner could not acquire read lock. Skipping.");
+            continue;
+        }
+        let sessions = sessions.unwrap();
 
-            for (_, (client_xid, session)) in sessions.iter().enumerate() {
-                if let Some(age) = now.duration_since(session.start_time).ok() {
-                    if age > Duration::from_secs(120) {
-                        items_to_remove.push(client_xid);
-                    }
+        for (_, (client_xid, session)) in sessions.iter().enumerate() {
+            if let Some(age) = now.duration_since(session.start_time).ok() {
+                if age > Duration::from_secs(120) {
+                    items_to_remove.push(client_xid);
                 }
             }
-
-            if items_to_remove.is_empty() {
-                continue;
-            }
-
-            let sessions = timeout(std::time::Duration::from_millis(500), active_sessions.write()).await;
-            if sessions.is_err() {
-                debug!("Session cleaner could not acquire write lock. Skipping.");
-                continue;
-            }
-            let mut sessions = sessions.unwrap();
-
-            sessions.retain(|client_xid, _| !items_to_remove.contains(&client_xid));
-            drop(sessions); // unlock the RwLock
-                            // would have been dropped anyway at the end of the loop
-                            // but best to keep awareness of this happing to avoid deadlocks
-
-            trace!(
-                "Session cleaner removed {} timed out sessions.",
-                items_to_remove.len()
-            );
         }
-    });
+
+        if items_to_remove.is_empty() {
+            continue;
+        }
+
+        let sessions = timeout(LOCK_TIMEOUT, active_sessions.write()).await;
+
+        if sessions.is_err() {
+            debug!("Session cleaner could not acquire write lock. Skipping.");
+            continue;
+        }
+        let mut sessions = sessions.unwrap();
+
+        sessions.retain(|client_xid, _| !items_to_remove.contains(&client_xid));
+        drop(sessions); // unlock the RwLock
+                        // would have been dropped anyway at the end of the loop
+                        // but best to keep awareness of this happing to avoid deadlocks
+
+        trace!(
+            "Session cleaner removed {} timed out sessions.",
+            items_to_remove.len()
+        );
+    }
 }
 
 fn enlist_sockets_for_events(poller: &IOPoller, interfaces: &Arc<Interfaces>) -> Result<()> {
@@ -298,13 +301,16 @@ async fn handle_dhcp_message(
 
     let response = match msg_type {
         MessageType::Discover => {
-            let has_boot_info_request = match incoming_msg.opts().get(OptionCode::ParameterRequestList) {
-                Some(DhcpOption::ParameterRequestList(params)) => params.contains(&OptionCode::BootfileName),
-                _ => false,
-            };
+            let has_boot_info_request =
+                match incoming_msg.opts().get(OptionCode::ParameterRequestList) {
+                    Some(DhcpOption::ParameterRequestList(params)) => {
+                        params.contains(&OptionCode::BootfileName)
+                    }
+                    _ => false,
+                };
 
             if !has_boot_info_request {
-                return Ok(())
+                return Ok(());
             }
 
             info!(
@@ -312,8 +318,7 @@ async fn handle_dhcp_message(
                 receiving_interface.name,
             );
 
-            let mut sessions =
-                timeout(std::time::Duration::from_millis(500), sessions.write()).await?;
+            let mut sessions = timeout(LOCK_TIMEOUT, sessions.write()).await?;
             let mut session = sessions.remove(&client_xid).unwrap_or(Session {
                 client_ip: None,
                 subnet: None,
@@ -334,8 +339,7 @@ async fn handle_dhcp_message(
             return Ok(());
         }
         MessageType::Offer => {
-            let mut sessions =
-                timeout(std::time::Duration::from_millis(500), sessions.write()).await?;
+            let mut sessions = timeout(LOCK_TIMEOUT, sessions.write()).await?;
             let session = sessions.get_mut(&client_xid);
             if session.is_none() {
                 debug!(
@@ -367,8 +371,7 @@ async fn handle_dhcp_message(
             add_boot_info_to_message(msg, &client_cfg, &client_mac_address_str, Some(&self_ipv4))?
         }
         MessageType::Request => {
-            let sessions =
-                timeout(std::time::Duration::from_millis(500), sessions.read()).await?;
+            let sessions = timeout(LOCK_TIMEOUT, sessions.read()).await?;
             let session = sessions.get(&client_xid);
             if session.is_none() {
                 debug!("No session found for client {client_mac_address_str}, XID: {client_xid}, ignoring.");
@@ -417,8 +420,7 @@ async fn handle_dhcp_message(
             ack
         }
         MessageType::Decline | MessageType::Ack => {
-            let mut sessions = 
-                timeout(std::time::Duration::from_millis(500), sessions.write()).await?;
+            let mut sessions = timeout(LOCK_TIMEOUT, sessions.write()).await?;
             sessions.remove(&client_xid);
             drop(sessions);
             debug!("Session for XID: {client_xid} ended.");
