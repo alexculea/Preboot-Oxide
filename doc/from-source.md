@@ -35,7 +35,7 @@ sudo ./target/release/preboot-oxide
 
 PXE network booting should now work. ❇️ 
 
-(see [Configuring](./configuring.md) or [Troubleshooting](./troubleshooting.md) otherwise)
+(see [Manual](./manual.md) or [Troubleshooting](./troubleshooting.md) otherwise)
 
 ### Requirements
 - The booting device should support the (usually very common) PXE boot procedure.

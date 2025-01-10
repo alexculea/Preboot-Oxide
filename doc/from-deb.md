@@ -36,9 +36,12 @@ sudo systemd start preboot-oxide
 
 # to check status use
 sudo systemd status preboot-oxide
+
+# or to see and follow the latest output logs
+sudo journalctl -fu preboot-oxide
 ```
 
-(see [Configuring](./configuring.md) or [Troubleshooting](./troubleshooting.md) in case of failure)
+(see [Manual](./manual.md) or [Troubleshooting](./troubleshooting.md) in case of failure)
 
 
 ### Uninstalling

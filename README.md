@@ -34,7 +34,7 @@ For future plans, see [Roadmap](./ROADMAP.md).
 - [From .deb package (for Debian & Ubuntu)](./doc/from-deb.md)
 
 ## Configuration
-- [Configuration manual](./doc/configuring.md)
+- [User Manual](./doc/manual.md)
 
 ### Development notes
 

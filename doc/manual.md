@@ -1,11 +1,12 @@
 
 
 <!-- TOC --><a name="configuration"></a>
-# Configuration
-Configuration is supported by either process ENV variables or with YAML config file. For very quick & simple setups ENV vars might be sufficient, YAML otherwise.
+# Manual
+
 
 <!-- TOC start (generated with https://github.com/derlin/bitdowntoc) -->
 
+- [Command Line](#command-line)
 - [Process environment variables](#process-environment-variables)
    * [Supported ENV variables](#supported-env-variables)
 - [YAML configuration file](#yaml-configuration-file)
@@ -23,12 +24,22 @@ Configuration is supported by either process ENV variables or with YAML config f
 
 <!-- TOC end -->
 
+<!-- TOC --><a name="command-line"></a>
+## Command Line
+
+- `-v...`: Helps troubleshoot issues controlling output verbosity. Available levels: warn, info, debug, trace. User troubleshooting level recommended is `info`. Examples:
+  - info: `preboot-oxide -vv`
+  - debug: `preboot-oxide -vvv`
+- `-h`, `--help`: Prints CLI help
+- `-V`, `--version`: Prints version
+
+Command line arguments take precedence over environment variables or file configuration.
+
 <!-- TOC --><a name="process-environment-variables"></a>
 ## Process environment variables
+Configuration is supported by either process ENV variables or with YAML config file. For very quick & simple setups ENV vars might be sufficient, YAML otherwise. If a YAML file is found, all process env variables are ignored.
+
 <!-- TOC --><a name="supported-env-variables"></a>
-
-If a YAML file is found, all process env variables are ignored.
-
 ### Supported ENV variables
 
  
@@ -55,10 +66,10 @@ If a YAML file is found, all process env variables are ignored.
 
 Specifying ENV variables can be achieved in a number of ways depending on the OS and how the executable is ran. Some examples:
 
-👉 Simple CLI invocation:
+👉 Simple CLI invocation with both arguments and environment variables:
 
 ```BASH
-PO_TFTP_SERVER_DIR_PATH=/dir/hosting/the/boot/files PO_BOOT_FILE=/path/to/the/bootable/image preboot-oxide
+PO_TFTP_SERVER_DIR_PATH=/dir/hosting/the/boot/files PO_BOOT_FILE=/path/to/the/bootable/image preboot-oxide -vv
 ```
 
 👉 `.env` file in the same directory as the executable
@@ -73,7 +84,7 @@ echo "$content" > ./target/release/.env
 ./target/release/preboot-oxide
 ```
 
-👉 OS-level, useful when running as a service, it will depend on the OS used - for most Linux distros it is possible by adding the variables to the `/etc/environment` file
+👉 OS-level, useful when running as a service, it will depend on the OS used - for some Linux distros it is possible to add the variables to the `/etc/environment` file or editing the systemd service.
 
 <!-- TOC --><a name="yaml-configuration-file"></a>
 ## YAML configuration file

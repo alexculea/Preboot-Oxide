@@ -27,6 +27,12 @@
 
     # Done, booting over the network should now work! ❇️
     ```
+3. **Optional**, consider setting a higher verbosity level to oversee the booting process or troubleshoot issues
 
-    (see [Configuring](./configuring.md) or [Troubleshooting](./troubleshooting.md) otherwise)
+    ```BASH
+    # for EFI
+    PO_BOOT_FILE=bootnetx64.efi PO_TFTP_SERVER_DIR_PATH=/tmp/boot/debian-installer/amd64 sudo preboot-oxide -vv
+    ```
+
+    See [Manual](./manual.md) or [Troubleshooting](./troubleshooting.md).
 
