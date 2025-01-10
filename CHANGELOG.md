@@ -55,3 +55,11 @@
 - chore: Fix small bug in release script (1e18a4a)
 - chore: add POC TFTP testing script (475bfc4)
 - fix: Ensure OS socket polling doesn't block async thread (4c5a5fd)
+## Version 1.5.12
+- fix: Improve troubleshooting UX by upgrading some errors to info level, fix TFTP logging (e2314f5)
+- doc: Manual clarifications (2733ebf)
+- feat: New verbosity CLI argument (8096918)
+- doc: Roadmap updates #2 (d8b34ad)
+- doc: Roadmap updates (140b788)
+- chore: Add initial testing for config (cac924b)
+- chore: Refactor modules in preparation for testing (05a56f8)
