@@ -7,6 +7,7 @@
     "chaddr",
     "DGRAM",
     "dhcproto",
+    "dotenv",
     "htype",
     "iface",
     "ifaces",

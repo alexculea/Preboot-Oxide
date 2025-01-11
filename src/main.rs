@@ -11,7 +11,7 @@ use single_instance::SingleInstance;
 use preboot_oxide::{
     cli,
     conf::{Conf, ProcessEnvConf, ENV_VAR_PREFIX},
-    dhcp,
+    dhcp::DhcpServerBuilder,
     tftp::spawn_tftp_service_async,
     Result,
 };
@@ -46,8 +46,10 @@ fn main() -> Result<()> {
     server_config.validate()?;
     spawn_tftp_service_async(&server_config)?;
 
-    let result: Result<()> =
-        task::block_on(dhcp::server_loop(server_config)).context("Starting DHCP service");
+    let dhcp_server = DhcpServerBuilder::default()
+        .config(server_config)
+        .build()?;
+    let result: Result<()> = task::block_on(dhcp_server.serve()).context("Starting DHCP service");
 
     debug!("Exiting");
     result
