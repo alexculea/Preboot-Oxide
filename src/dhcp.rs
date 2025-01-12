@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     net::{Ipv4Addr, SocketAddrV4},
     os::fd::{AsRawFd, BorrowedFd},
     sync::Arc,
@@ -10,7 +11,7 @@ use async_std::{future::timeout, net::UdpSocket, sync::RwLock, task};
 use derive_builder::Builder;
 use log::{debug, error, info, trace};
 
-use crate::{conf::ConfEntryRef, util::bytes_to_mac_address};
+use crate::conf::ConfEntryRef;
 use dhcproto::v4::{
     Decodable, Decoder, DhcpOption, DhcpOptions, Encodable, Encoder, Flags, Message, MessageType,
     Opcode, OptionCode,
@@ -71,6 +72,135 @@ impl Interfaces {
 impl From<Vec<Interface>> for Interfaces {
     fn from(interfaces: Vec<Interface>) -> Self {
         Self { interfaces }
+    }
+}
+
+#[derive(Default, Clone)]
+struct DhcpMsgWrapper {
+    pub msg: Message,
+}
+
+impl DhcpMsgWrapper {
+    pub fn from_buffer(buffer: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(buffer);
+        let msg = Message::decode(&mut decoder)?;
+        Ok(Self { msg })
+    }
+
+    pub fn from_msg(msg: Message) -> Self {
+        Self { msg }
+    }
+
+    pub fn xid(&self) -> u32 {
+        self.msg.xid()
+    }
+
+    pub fn yiaddr(&self) -> Ipv4Addr {
+        self.msg.yiaddr()
+    }
+
+    pub fn subnet_mask(&self) -> Option<&DhcpOption> {
+        self.msg.opts().get(OptionCode::SubnetMask)
+    }
+
+    pub fn address_lease_time(&self) -> Option<&DhcpOption> {
+        self.msg.opts().get(OptionCode::AddressLeaseTime)
+    }
+
+    pub fn msg_type(&self) -> Option<MessageType> {
+        self.msg.opts().msg_type()
+    }
+
+    pub fn requests_boot_info(&self) -> bool {
+        match self.msg.opts().get(OptionCode::ParameterRequestList) {
+            Some(DhcpOption::ParameterRequestList(params)) => {
+                params.contains(&OptionCode::BootfileName)
+            }
+            _ => false,
+        }
+    }
+
+    pub fn set_src_ipv4(&mut self, src_ipv4: &Ipv4Addr) {
+        let opts = self.msg.opts_mut();
+        opts.insert(DhcpOption::ServerIdentifier(*src_ipv4));
+        self.msg.set_siaddr(*src_ipv4);
+    }
+
+    fn set_boot_info_from_conf(
+        &mut self,
+        conf: &ConfEntryRef,
+        client: &String,
+        my_ipv4: Option<&Ipv4Addr>,
+    ) -> Result<()> {
+        let opts = self.msg.opts_mut();
+
+        let boot_filename = conf.boot_file.as_ref().ok_or(anyhow!(
+            "Cannot determine boot file path for client having MAC address: {client}."
+        ))?;
+        let tfpt_srv_addr = conf.boot_server_ipv4.or(my_ipv4).ok_or(anyhow!(
+            "Cannot determine TFTP server IPv4 address for client having MAC address: {client}"
+        ))?;
+
+        opts.insert(DhcpOption::BootfileName(boot_filename.as_bytes().to_vec()));
+        opts.insert(DhcpOption::TFTPServerAddress(*tfpt_srv_addr));
+        opts.insert(DhcpOption::ServerIdentifier(*tfpt_srv_addr));
+
+        self.msg
+            .set_siaddr(*tfpt_srv_addr)
+            .set_fname_str(boot_filename);
+
+        Ok(())
+    }
+
+    pub fn client_mac_address<'a>(&'a self) -> Option<&'a MacAddress> {
+        self.msg.chaddr().first_chunk()
+    }
+
+    pub fn client_mac_address_str(&self) -> Result<String> {
+        let bytes: &[u8] = self.client_mac_address().ok_or(anyhow!(
+            "The client MAC address does not fit the size requirements of exactly 6 bytes."
+        ))?;
+        let str_parts: Vec<String> = bytes
+            .into_iter()
+            .map(|byte| format!("{:0>2X}", byte))
+            .collect();
+        Ok(str_parts.join(":"))
+    }
+
+    pub fn should_handle(&self) -> bool {
+        let msg_opts = self.msg.opts();
+        let has_boot_file_name = msg_opts.get(OptionCode::BootfileName).is_some();
+        let is_request = msg_opts.has_msg_type(MessageType::Request);
+        let is_offer = msg_opts.has_msg_type(MessageType::Offer);
+        let is_ack = msg_opts.has_msg_type(MessageType::Ack);
+        let is_discover = msg_opts.has_msg_type(MessageType::Discover);
+
+        let matches = (!has_boot_file_name && is_offer) | is_request | is_ack | is_discover;
+        if !matches {
+            debug!(
+                "DHCP message ignored due to not matching filter. \
+              Required: has_boot_file_name: {has_boot_file_name}, is_request: {is_request} \
+              is_offer: {is_offer}, is_ack: {is_ack}, is_discover: {is_discover}"
+            );
+        } else {
+            debug!("Eligible DHCP message found.");
+        }
+
+        matches
+    }
+}
+
+impl TryInto<serde_json::Value> for DhcpMsgWrapper {
+    type Error = serde_json::Error;
+
+    fn try_into(self) -> core::result::Result<serde_json::Value, Self::Error> {
+        serde_json::to_value(self.msg)
+    }
+}
+
+impl Debug for DhcpMsgWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.msg.fmt(f)
     }
 }
 
@@ -183,10 +313,12 @@ impl<'a> DhcpServer {
                 receiving_interface.name
             ))?;
 
-        let incoming_msg = Message::decode(&mut Decoder::new(&rcv_data))?;
+        let incoming_msg = DhcpMsgWrapper::from_buffer(&rcv_data[..bytes_read])?;
         let client_xid = incoming_msg.xid();
-        let opts = incoming_msg.opts();
-        let msg_type = opts.msg_type().context("No message type found")?;
+        let msg_type = incoming_msg.msg_type().ok_or(anyhow!(
+            "No message type found in DHCP message with XID: {client_xid}. Skipping.",
+        ))?;
+        let client_mac_address_str = incoming_msg.client_mac_address_str()?;
 
         debug!(
             "Received from IP: {} on {}, port: {}, DHCP Msg type: {:?}",
@@ -197,27 +329,13 @@ impl<'a> DhcpServer {
         );
         trace!("{:#?}", incoming_msg);
 
-        if !matches_filter(&incoming_msg) {
+        if !incoming_msg.should_handle() {
             return Ok(());
         }
 
-        let client_mac_address: MacAddress =
-            *incoming_msg.chaddr().first_chunk().ok_or(anyhow!(
-                "The client MAC address does not fit the size requirements of exactly 6 bytes."
-            ))?;
-        let client_mac_address_str = bytes_to_mac_address(&client_mac_address);
-
-        let response = match msg_type {
+        let reply = match msg_type {
             MessageType::Discover => {
-                let has_boot_info_request =
-                    match incoming_msg.opts().get(OptionCode::ParameterRequestList) {
-                        Some(DhcpOption::ParameterRequestList(params)) => {
-                            params.contains(&OptionCode::BootfileName)
-                        }
-                        _ => false,
-                    };
-
-                if !has_boot_info_request {
+                if !incoming_msg.requests_boot_info() {
                     return Ok(());
                 }
 
@@ -234,7 +352,7 @@ impl<'a> DhcpServer {
                     start_time: std::time::SystemTime::now(),
                     discover_message: None,
                 });
-                session.discover_message = Some(incoming_msg);
+                session.discover_message = Some(incoming_msg.msg);
                 sessions.insert(client_xid, session)?;
                 drop(sessions);
 
@@ -258,11 +376,8 @@ impl<'a> DhcpServer {
 
                 let session = session.unwrap();
                 session.client_ip = Some(incoming_msg.yiaddr());
-                session.subnet = incoming_msg.opts().get(OptionCode::SubnetMask).cloned();
-                session.lease_time = incoming_msg
-                    .opts()
-                    .get(OptionCode::AddressLeaseTime)
-                    .cloned();
+                session.subnet = incoming_msg.subnet_mask().cloned();
+                session.lease_time = incoming_msg.address_lease_time().cloned();
 
                 let initial_discover_msg = session.discover_message.clone().ok_or(anyhow!(
                     "Initial discovery message for XID {client_xid} not found due to either a bug or incorrect DHCP server behavior. Skipping.",
@@ -273,13 +388,16 @@ impl<'a> DhcpServer {
                 let client_cfg = self.config.get_from_doc(discover_msg_doc)?.ok_or(anyhow!(
                     "No configuration found for client {client_mac_address_str}. Skipping",
                 ))?;
-                let msg = apply_self_to_message(incoming_msg, &self_ipv4);
-                add_boot_info_to_message(
-                    msg,
+
+                let mut response = incoming_msg.clone();
+                response.set_src_ipv4(&self_ipv4);
+                response.set_boot_info_from_conf(
                     &client_cfg,
                     &client_mac_address_str,
                     Some(&self_ipv4),
-                )?
+                )?;
+
+                response.msg
             }
             MessageType::Request => {
                 let sessions = read_unlock(&self.sessions).await?;
@@ -309,24 +427,30 @@ impl<'a> DhcpServer {
                     .set_yiaddr(session.client_ip.unwrap_or(Ipv4Addr::new(0, 0, 0, 0)))
                     .set_opcode(Opcode::BootReply)
                     .set_opts(opts)
-                    .set_chaddr(&client_mac_address)
+                    .set_chaddr(
+                        incoming_msg
+                            .client_mac_address()
+                            .ok_or(anyhow!("Cannot determine client MAC address."))?,
+                    )
                     .set_xid(client_xid);
                 drop(sessions);
 
-                let incoming_msg_doc = serde_json::to_value(incoming_msg)?;
-                let client_cfg = self.config.get_from_doc(incoming_msg_doc)?.ok_or(anyhow!(
-                    "No configuration found for client {client_mac_address_str}. Skipping",
-                ))?;
+                let client_cfg =
+                    self.config
+                        .get_from_doc(incoming_msg.try_into()?)?
+                        .ok_or(anyhow!(
+                            "No configuration found for client {client_mac_address_str}. Skipping",
+                        ))?;
 
-                ack = apply_self_to_message(ack, &self_ipv4);
-                ack = add_boot_info_to_message(
-                    ack,
+                let mut response = DhcpMsgWrapper::from_msg(ack);
+                response.set_src_ipv4(&self_ipv4);
+                response.set_boot_info_from_conf(
                     &client_cfg,
                     &client_mac_address_str,
                     Some(&self_ipv4),
                 )?;
 
-                ack
+                response.msg
             }
             MessageType::Decline | MessageType::Ack => {
                 let mut sessions = write_unlock(&self.sessions).await?;
@@ -335,10 +459,7 @@ impl<'a> DhcpServer {
                 debug!("Session for XID: {client_xid} ended.");
 
                 return if msg_type == MessageType::Decline {
-                    bail!(
-                        "Client {} declined REQUEST.",
-                        bytes_to_mac_address(incoming_msg.chaddr())
-                    )
+                    bail!("Client {client_mac_address_str} declined REQUEST.")
                 } else {
                     Ok(())
                 };
@@ -346,20 +467,21 @@ impl<'a> DhcpServer {
             _ => return Ok(()),
         };
 
+        
+        let iface_name = &receiving_interface.name;
         let to_addr = "255.255.255.255:68";
         let mut buf = Vec::new();
-        let mut e = Encoder::new(&mut buf);
-        let iface_name = &receiving_interface.name;
-        response.encode(&mut e)?;
+        let mut encoder = Encoder::new(&mut buf);
+        reply.encode(&mut encoder)?;
 
         info!("Responding with message to {to_addr} on interface {iface_name}.");
-        trace!("{:#?}", response);
+        trace!("{:#?}", reply);
 
         let socket = &incoming_interface.server;
         socket.send_to(&buf, to_addr).await?;
         debug!(
             "DHCP reply ({:?}) sent to: {}",
-            response.opts().get(OptionCode::MessageType).unwrap(),
+            reply.opts().get(OptionCode::MessageType).unwrap(),
             to_addr
         );
 
@@ -496,79 +618,21 @@ fn socket_from_iface_ip(iface: &NetworkInterface, ip: &&str) -> Result<UdpSocket
     Ok(socket2_to_async_std(socket))
 }
 
-fn matches_filter(msg: &Message) -> bool {
-    let msg_opts = msg.opts();
-    let has_boot_file_name = msg_opts.get(OptionCode::BootfileName).is_some();
-    let is_request = msg_opts.has_msg_type(MessageType::Request);
-    let is_offer = msg_opts.has_msg_type(MessageType::Offer);
-    let is_ack = msg_opts.has_msg_type(MessageType::Ack);
-    let is_discover = msg_opts.has_msg_type(MessageType::Discover);
-
-    let matches = (!has_boot_file_name && is_offer) | is_request | is_ack | is_discover;
-    if !matches {
-        debug!(
-            "DHCP message ignored due to not matching filter. \
-          Required: has_boot_file_name: {has_boot_file_name}, is_request: {is_request} \
-          is_offer: {is_offer}, is_ack: {is_ack}, is_discover: {is_discover}"
-        );
-    } else {
-        debug!("Eligible DHCP message found.");
-    }
-
-    matches
-}
-
 fn socket2_to_async_std(socket: Socket) -> UdpSocket {
     let std_socket = Into::<std::net::UdpSocket>::into(socket);
     UdpSocket::from(std_socket)
 }
 
-fn add_boot_info_to_message(
-    mut msg: Message,
-    conf: &ConfEntryRef,
-    client: &String,
-    my_ipv4: Option<&Ipv4Addr>,
-) -> Result<Message> {
-    let opts = msg.opts_mut();
-
-    let boot_filename = conf.boot_file.as_ref().ok_or(anyhow!(
-        "Cannot determine boot file path for client having MAC address: {client}."
-    ))?;
-    let tfpt_srv_addr = conf.boot_server_ipv4.or(my_ipv4).ok_or(anyhow!(
-        "Cannot determine TFTP server IPv4 address for client having MAC address: {client}"
-    ))?;
-
-    opts.insert(DhcpOption::BootfileName(boot_filename.as_bytes().to_vec()));
-    opts.insert(DhcpOption::TFTPServerAddress(*tfpt_srv_addr));
-    opts.insert(DhcpOption::ServerIdentifier(*tfpt_srv_addr));
-
-    msg.set_siaddr(*tfpt_srv_addr).set_fname_str(boot_filename);
-
-    return Ok(msg);
-}
-
-fn apply_self_to_message(mut msg: Message, my_ipv4: &Ipv4Addr) -> Message {
-    let opts = msg.opts_mut();
-    opts.insert(DhcpOption::ServerIdentifier(my_ipv4.clone()));
-    msg.set_siaddr(my_ipv4.clone());
-
-    msg
-}
-
 async fn read_unlock<'a, T>(
     lock: &'a RwLock<T>,
-) -> core::result::Result<
-    async_std::sync::RwLockReadGuard<'a, T>,
-    async_std::future::TimeoutError,
-> {
+) -> core::result::Result<async_std::sync::RwLockReadGuard<'a, T>, async_std::future::TimeoutError>
+{
     timeout(LOCK_TIMEOUT, lock.read()).await
 }
 
 async fn write_unlock<'a, T>(
     lock: &'a RwLock<T>,
-) -> core::result::Result<
-    async_std::sync::RwLockWriteGuard<'a, T>,
-    async_std::future::TimeoutError,
-> {
+) -> core::result::Result<async_std::sync::RwLockWriteGuard<'a, T>, async_std::future::TimeoutError>
+{
     timeout(LOCK_TIMEOUT, lock.write()).await
 }
