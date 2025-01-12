@@ -93,9 +93,7 @@ impl DhcpServerBuilder {
             .config
             .take()
             .ok_or(anyhow!("No server config provided."))?;
-        let sessions = Arc::new(RwLock::new(SessionMap::new(
-            config.get_max_sessions(),
-        )));
+        let sessions = Arc::new(RwLock::new(SessionMap::new(config.get_max_sessions())));
         let io_poller = Arc::new(IOPoller::new().context("Setting up OS IO polling.")?);
 
         // TODO: Decouple DhcpServer from Conf and Interfaces
@@ -228,7 +226,7 @@ impl<'a> DhcpServer {
                     receiving_interface.name,
                 );
 
-                let mut sessions = timeout(LOCK_TIMEOUT, self.sessions.write()).await?;
+                let mut sessions = write_unlock(&self.sessions).await?;
                 let mut session = sessions.remove(&client_xid).unwrap_or(Session {
                     client_ip: None,
                     subnet: None,
@@ -249,7 +247,7 @@ impl<'a> DhcpServer {
                 return Ok(());
             }
             MessageType::Offer => {
-                let mut sessions = timeout(LOCK_TIMEOUT, self.sessions.write()).await?;
+                let mut sessions = write_unlock(&self.sessions).await?;
                 let session = sessions.get_mut(&client_xid);
                 if session.is_none() {
                     debug!(
@@ -272,12 +270,9 @@ impl<'a> DhcpServer {
                 drop(sessions);
 
                 let discover_msg_doc = serde_json::to_value(initial_discover_msg)?;
-                let client_cfg =
-                    self.config
-                        .get_from_doc(discover_msg_doc)?
-                        .ok_or(anyhow!(
-                            "No configuration found for client {client_mac_address_str}. Skipping",
-                        ))?;
+                let client_cfg = self.config.get_from_doc(discover_msg_doc)?.ok_or(anyhow!(
+                    "No configuration found for client {client_mac_address_str}. Skipping",
+                ))?;
                 let msg = apply_self_to_message(incoming_msg, &self_ipv4);
                 add_boot_info_to_message(
                     msg,
@@ -287,7 +282,7 @@ impl<'a> DhcpServer {
                 )?
             }
             MessageType::Request => {
-                let sessions = timeout(LOCK_TIMEOUT, self.sessions.read()).await?;
+                let sessions = read_unlock(&self.sessions).await?;
                 let session = sessions.get(&client_xid);
                 if session.is_none() {
                     debug!("No session found for client {client_mac_address_str}, XID: {client_xid}, ignoring.");
@@ -319,12 +314,9 @@ impl<'a> DhcpServer {
                 drop(sessions);
 
                 let incoming_msg_doc = serde_json::to_value(incoming_msg)?;
-                let client_cfg =
-                    self.config
-                        .get_from_doc(incoming_msg_doc)?
-                        .ok_or(anyhow!(
-                            "No configuration found for client {client_mac_address_str}. Skipping",
-                        ))?;
+                let client_cfg = self.config.get_from_doc(incoming_msg_doc)?.ok_or(anyhow!(
+                    "No configuration found for client {client_mac_address_str}. Skipping",
+                ))?;
 
                 ack = apply_self_to_message(ack, &self_ipv4);
                 ack = add_boot_info_to_message(
@@ -337,7 +329,7 @@ impl<'a> DhcpServer {
                 ack
             }
             MessageType::Decline | MessageType::Ack => {
-                let mut sessions = timeout(LOCK_TIMEOUT, self.sessions.write()).await?;
+                let mut sessions = write_unlock(&self.sessions).await?;
                 sessions.remove(&client_xid);
                 drop(sessions);
                 debug!("Session for XID: {client_xid} ended.");
@@ -379,7 +371,7 @@ impl<'a> DhcpServer {
             task::sleep(Duration::from_secs(60)).await;
             let now = std::time::SystemTime::now();
             let mut items_to_remove = Vec::with_capacity(50);
-            let sessions = timeout(LOCK_TIMEOUT, active_sessions.read()).await;
+            let sessions = read_unlock(&active_sessions).await;
             if sessions.is_err() {
                 debug!("Session cleaner could not acquire read lock. Skipping.");
                 continue;
@@ -398,7 +390,7 @@ impl<'a> DhcpServer {
                 continue;
             }
 
-            let sessions = timeout(LOCK_TIMEOUT, active_sessions.write()).await;
+            let sessions = write_unlock(&active_sessions).await;
 
             if sessions.is_err() {
                 debug!("Session cleaner could not acquire write lock. Skipping.");
@@ -561,4 +553,22 @@ fn apply_self_to_message(mut msg: Message, my_ipv4: &Ipv4Addr) -> Message {
     msg.set_siaddr(my_ipv4.clone());
 
     msg
+}
+
+async fn read_unlock<'a, T>(
+    lock: &'a RwLock<T>,
+) -> core::result::Result<
+    async_std::sync::RwLockReadGuard<'a, T>,
+    async_std::future::TimeoutError,
+> {
+    timeout(LOCK_TIMEOUT, lock.read()).await
+}
+
+async fn write_unlock<'a, T>(
+    lock: &'a RwLock<T>,
+) -> core::result::Result<
+    async_std::sync::RwLockWriteGuard<'a, T>,
+    async_std::future::TimeoutError,
+> {
+    timeout(LOCK_TIMEOUT, lock.write()).await
 }
