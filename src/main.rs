@@ -17,6 +17,7 @@ use preboot_oxide::{
 };
 
 fn main() -> Result<()> {
+    let arg_log_level = cli::parse();
     let instance = SingleInstance::new("preboot-oxide")?;
     if !instance.is_single() {
         bail!("Another instance is already running");
@@ -26,7 +27,6 @@ fn main() -> Result<()> {
 
     let _ = dotenv::from_path(dot_env_path);
 
-    let arg_log_level = cli::parse();
     let log_level = arg_log_level
         .or(env::var(format!("{ENV_VAR_PREFIX}LOG_LEVEL")).ok())
         .unwrap_or("error".into());
