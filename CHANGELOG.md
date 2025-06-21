@@ -71,3 +71,9 @@
 - refactor: Small readability improvements and reformatting (2dbc1a1)
 - refactor: Move sessions maps to utils (2c6c275)
 - chore: Simplifies some error returns and code formatting (9780f23)
+## Version 1.8.20
+- feat: Filter out very verbose logs emitted by dependencies (cf081bb)
+- fix: Exceeding max log level via CLI argument, disables verbosity instead of limiting to max supported (db5cf03)
+- feat: Streamline logs for clearer insight into boot process failure, inform user of timeouts (286a975)
+- feat: Relay original gateway IP and client old address between external DHCP and booting clients (7d2d41c)
+- fix: Fix sessions cleanup write lock not being acquired due to contention with read lock (2e602a7)
