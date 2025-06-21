@@ -14,7 +14,12 @@ pub fn parse() -> Option<String> {
     let args = Cli::parse();
 
     const LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
+    let level = args.verbosity
+        .map(|level| level.clamp(0, LEVELS.len() as u8 - 1))
+        .unwrap_or(0);
+    
+
     LEVELS
-        .get(args.verbosity.unwrap_or(0) as usize)
+        .get(level as usize)
         .map(|s| s.to_string())
 }
