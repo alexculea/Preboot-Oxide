@@ -63,3 +63,11 @@
 - doc: Roadmap updates (140b788)
 - chore: Add initial testing for config (cac924b)
 - chore: Refactor modules in preparation for testing (05a56f8)
+## Version 1.5.18
+- fix: Show version when the -V flag is used even if another instance is already running (29e33f1)
+- refactor: Encapsulate DHCP message processing logic (dc40d1a)
+- refactor: Move unlocking logic to dedicated functions (6d5e172)
+- refactor: DHCP server builder pattern (edc40f4)
+- refactor: Small readability improvements and reformatting (2dbc1a1)
+- refactor: Move sessions maps to utils (2c6c275)
+- chore: Simplifies some error returns and code formatting (9780f23)
