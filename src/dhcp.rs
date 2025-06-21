@@ -30,6 +30,8 @@ type SessionMap = QuotaMap<u32, Session>;
 
 struct Session {
     pub client_ip: Option<Ipv4Addr>,
+    pub gateway_ip: Option<Ipv4Addr>,
+    pub ciaddr: Option<Ipv4Addr>,
     pub subnet: Option<DhcpOption>,
     pub lease_time: Option<DhcpOption>,
     pub start_time: std::time::SystemTime,
@@ -347,6 +349,8 @@ impl<'a> DhcpServer {
                 let mut sessions = write_unlock(&self.sessions).await?;
                 let mut session = sessions.remove(&client_xid).unwrap_or(Session {
                     client_ip: None,
+                    gateway_ip: None,
+                    ciaddr: None,
                     subnet: None,
                     lease_time: None,
                     start_time: std::time::SystemTime::now(),
@@ -378,6 +382,8 @@ impl<'a> DhcpServer {
                 session.client_ip = Some(incoming_msg.yiaddr());
                 session.subnet = incoming_msg.subnet_mask().cloned();
                 session.lease_time = incoming_msg.address_lease_time().cloned();
+                session.gateway_ip = incoming_msg.msg.giaddr().into();
+                session.ciaddr = incoming_msg.msg.ciaddr().into();
 
                 let initial_discover_msg = session.discover_message.clone().ok_or(anyhow!(
                     "Initial discovery message for XID {client_xid} not found due to either a bug or incorrect DHCP server behavior. Skipping.",
@@ -425,6 +431,8 @@ impl<'a> DhcpServer {
 
                 ack.set_flags(Flags::new(0).set_broadcast())
                     .set_yiaddr(session.client_ip.unwrap_or(Ipv4Addr::new(0, 0, 0, 0)))
+                    .set_giaddr(session.gateway_ip.unwrap_or(Ipv4Addr::new(0, 0, 0, 0)))
+                    .set_ciaddr(session.ciaddr.unwrap_or(Ipv4Addr::new(0, 0, 0, 0)))
                     .set_opcode(Opcode::BootReply)
                     .set_opts(opts)
                     .set_chaddr(
