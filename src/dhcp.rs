@@ -507,7 +507,7 @@ impl<'a> DhcpServer {
                     }
                 }
             }
-
+            drop(sessions); // unlock the RwLock
             if items_to_remove.is_empty() {
                 continue;
             }
