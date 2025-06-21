@@ -159,7 +159,11 @@ impl DhcpMsgWrapper {
     }
 
     pub fn client_mac_address_str(&self) -> Result<String> {
-        let bytes: &[u8] = self.client_mac_address().ok_or(anyhow!(
+        Self::client_mac_address_str_from_msg(&self.msg)
+    }
+
+    pub fn client_mac_address_str_from_msg(msg: &Message) -> Result<String> {
+        let bytes: &[u8; 6] = msg.chaddr().first_chunk().ok_or(anyhow!(
             "The client MAC address does not fit the size requirements of exactly 6 bytes."
         ))?;
         let str_parts: Vec<String> = bytes
@@ -176,16 +180,15 @@ impl DhcpMsgWrapper {
         let is_offer = msg_opts.has_msg_type(MessageType::Offer);
         let is_ack = msg_opts.has_msg_type(MessageType::Ack);
         let is_discover = msg_opts.has_msg_type(MessageType::Discover);
+        let is_offer_without_boot = !has_boot_file_name && is_offer;
 
-        let matches = (!has_boot_file_name && is_offer) | is_request | is_ack | is_discover;
+        let matches = is_offer_without_boot | is_request | is_ack | is_discover;
         if !matches {
             debug!(
-                "DHCP message ignored due to not matching filter. \
-              Required: has_boot_file_name: {has_boot_file_name}, is_request: {is_request} \
-              is_offer: {is_offer}, is_ack: {is_ack}, is_discover: {is_discover}"
+                "Ignoring DHCP message broadcast, unfulfilled requirements. \
+              Expecting any of the following to be true: is_offer_without_boot: {is_offer_without_boot}, is_request: {is_request} \
+              is_offer: {is_offer}, is_ack: {is_ack}, is_discover: {is_discover}. Likely this is just regular DHCP chatter on the network which we do not action.",
             );
-        } else {
-            debug!("Eligible DHCP message found.");
         }
 
         matches
@@ -342,7 +345,8 @@ impl<'a> DhcpServer {
                 }
 
                 info!(
-                    "Received DISCOVER boot request from client {client_mac_address_str} with XID: {client_xid} on interface {}.",
+                    "Received {:?} from client {client_mac_address_str} with XID {client_xid} on interface {}.",
+                    msg_type,
                     receiving_interface.name,
                 );
 
@@ -366,9 +370,11 @@ impl<'a> DhcpServer {
                 duplicate below with adding the boot information to the message.
                 */
                 debug!("Saved message {client_xid} to sessions.");
+                debug!("Awaiting for authoritative DHCP server to respond with OFFER to {client_mac_address_str}...");
                 return Ok(());
             }
             MessageType::Offer => {
+                debug!("External Offer received from DHCP server for {client_mac_address_str} client XID: {client_xid}.");
                 let mut sessions = write_unlock(&self.sessions).await?;
                 let session = sessions.get_mut(&client_xid);
                 if session.is_none() {
@@ -402,6 +408,14 @@ impl<'a> DhcpServer {
                     &client_mac_address_str,
                     Some(&self_ipv4),
                 )?;
+
+                info!(
+                    "Responding with boot information to client {client_mac_address_str}, boot file: {}, server: {}, client XID: {client_xid}.",
+                    client_cfg.boot_file.unwrap_or(&"None".to_string()),
+                    client_cfg.boot_server_ipv4
+                        .map(|ip| ip.to_string())
+                        .unwrap_or(self_ipv4.to_string()),
+                );
 
                 response.msg
             }
@@ -482,36 +496,49 @@ impl<'a> DhcpServer {
         let mut encoder = Encoder::new(&mut buf);
         reply.encode(&mut encoder)?;
 
-        info!("Responding with message to {to_addr} on interface {iface_name}.");
+        let reply_mac = DhcpMsgWrapper::client_mac_address_str_from_msg(&reply)
+            .unwrap_or_else(|_| "Unknown".to_string());
+        let reply_type = reply.opts().msg_type().unwrap_or(MessageType::Unknown(0));
+        debug!("Responding with {:?} on interface {iface_name} to client {reply_mac}.", reply_type);
         trace!("{:#?}", reply);
 
         let socket = &incoming_interface.server;
         socket.send_to(&buf, to_addr).await?;
-        debug!(
-            "DHCP reply ({:?}) sent to: {}",
-            reply.opts().get(OptionCode::MessageType).unwrap(),
-            to_addr
-        );
 
         Ok(())
     }
 
     async fn session_cleaner_entrypoint(active_sessions: Arc<RwLock<SessionMap>>) {
         loop {
-            task::sleep(Duration::from_secs(60)).await;
+            task::sleep(Duration::from_secs(10)).await;
             let now = std::time::SystemTime::now();
             let mut items_to_remove = Vec::with_capacity(50);
             let sessions = read_unlock(&active_sessions).await;
             if sessions.is_err() {
                 debug!("Session cleaner could not acquire read lock. Skipping.");
+                debug!("{:?}", sessions.err().unwrap());
                 continue;
             }
             let sessions = sessions.unwrap();
 
             for (_, (client_xid, session)) in sessions.iter().enumerate() {
                 if let Some(age) = now.duration_since(session.start_time).ok() {
-                    if age > Duration::from_secs(120) {
-                        items_to_remove.push(client_xid);
+                    if age > Duration::from_secs(30) {
+                        items_to_remove.push(*client_xid); 
+                        if session.client_ip.is_none() {
+                            info!(
+                                "Session for client XID: {} timed out after {} seconds. Was expecting IP information from an authoritative DHCP server. Is there a DHCP service running on the network?",
+                                client_xid,
+                                age.as_secs()
+                            );
+                        } else {
+                            info!(
+                                "Session for client XID: {} timed out after {} seconds. Was expecting client to follow up with a Request on the offer made.",
+                                client_xid,
+                                age.as_secs(),
+                            );
+                        }
+
                     }
                 }
             }
@@ -524,6 +551,7 @@ impl<'a> DhcpServer {
 
             if sessions.is_err() {
                 debug!("Session cleaner could not acquire write lock. Skipping.");
+                debug!("{:?}", sessions.err().unwrap());
                 continue;
             }
             let mut sessions = sessions.unwrap();
