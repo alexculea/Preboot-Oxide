@@ -11,4 +11,5 @@
 - Publish APT package repositories
 - Provide RPM packages at every release
 - Match 90% of the `tftp-hpa` TFTP file server performance
+- Monitor network interfaces and rebind and refresh inferred IP information provided to clients 
 

@@ -36,18 +36,6 @@ For future plans, see [Roadmap](./ROADMAP.md).
 ## Configuration
 - [User Manual](./doc/manual.md)
 
-### Development notes
-
-### Debugging
-VS Code is the recommended IDE.
-Debugging is best done when the program runs as privileged and this can be achieved using the `lldb-server` (which needs to be installed separately). Once present,
-`./vscode/launch.json` has `Remote LLDB as root` to match the launch configuration.
-
-```BASH
-# run the server before launching the debugger from VS Code
-sudo su
-lldb-server platform --server --listen 127.0.0.1:12345
-```
 
 ## Footnotes
 *: Using unattended install setups it is possible to customize any aspect of the OS install such that all installs are reproducible.
