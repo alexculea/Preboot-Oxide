@@ -31,7 +31,10 @@ fn main() -> Result<()> {
         .or(env::var(format!("{ENV_VAR_PREFIX}LOG_LEVEL")).ok())
         .unwrap_or("error".into());
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(format!("preboot_oxide={log_level}")),
+    )
+    .init();
 
     let conf_path = env::var(format!("{ENV_VAR_PREFIX}CONF_PATH"))
         .map(std::path::PathBuf::from)
