@@ -1,0 +1,13 @@
+[Unit]
+Description=PXE Boot server
+After=network.target
+Wants=
+
+[Service]
+Restart=always
+Type=simple
+ExecStart=/bin/preboot-oxide
+Environment=
+
+[Install]
+WantedBy=multi-user.target

@@ -136,7 +136,8 @@ fi
 read -p "Do you want to build the packages? (y/n): " answer
 if [[ $answer == "y" ]]; then
   cargo build --release
-  exec "$SCRIPTS_DIR/package-as-deb.sh"
+  "$SCRIPTS_DIR/package-as-deb.sh"
+  "$SCRIPTS_DIR/package-as-rpm.sh"
 fi
 
 exit 0
