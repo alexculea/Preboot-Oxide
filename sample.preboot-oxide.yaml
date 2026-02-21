@@ -7,7 +7,7 @@ ifaces:
   - enp0s8
 # list of network interface names where to listen
 
-tftp_server_dir: /home/alex/self-cloud/infrastructure/boot-tftp/amd64
+tftp_server_dir: /path/to/pxe/bootable/files
 # if given, the TFTP service will be started and serve this path
 # if not given, it is expected that a boot_server_ipv4 is given instead
 
