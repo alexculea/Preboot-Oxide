@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Error};
 use async_std::task;
-use async_tftp::{async_trait, packet, server::TftpServerBuilder, Error as TftpError};
+use async_tftp::{packet, server::TftpServerBuilder, Error as TftpError};
 use log::{debug, error, info};
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 
@@ -118,7 +118,6 @@ impl DirHandler {
     }
 }
 
-#[async_trait]
 impl async_tftp::server::Handler for DirHandler {
     type Reader = File;
     type Writer = File;

@@ -1,13 +1,13 @@
 [package]
 name = "preboot-oxide"
-version = "1.8.20"
+version = "1.8.21"
 edition = "2021"
 license = "AGPL-3.0-only"
 
 [dependencies]
 anyhow = "1.0.79"
 async-std = "1.12.0"
-async-tftp = "0.3.6"
+async-tftp = "0.4.2"
 async-trait = "0.1.80"
 clap = { version = "4.5.7", features = ["derive", "cargo"] }
 derive_builder = "0.20.2"
