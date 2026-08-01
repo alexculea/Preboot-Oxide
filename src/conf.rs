@@ -447,7 +447,7 @@ impl Conf {
                 let match_result = cfg_value.matches(&converted_value);
                 let match_type = if match_entry.regex { "regex" } else { "exact" };
 
-                trace!("Matching {match_type} field {cfg_key}=\"{converted_value}\" to \"{cfg_value}\", matching = {match_result}");
+                info!("Matching {match_type} field {cfg_key}=\"{converted_value}\" to \"{cfg_value}\", matching = {match_result}");
                 match_result
             }
         };

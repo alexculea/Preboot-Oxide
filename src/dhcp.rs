@@ -354,7 +354,7 @@ impl<'a> DhcpServer {
                 }
 
                 info!(
-                    "Received {:?} from client {client_mac_address_str} with XID {client_xid} on interface {}.",
+                    "Received {:?} from client {client_mac_address_str} requesting boot information on interface {} (XID {client_xid}).",
                     msg_type,
                     receiving_interface.name,
                 );
@@ -407,7 +407,7 @@ impl<'a> DhcpServer {
 
                 let discover_msg_doc = serde_json::to_value(initial_discover_msg)?;
                 let client_cfg = self.config.get_from_doc(discover_msg_doc)?.ok_or(anyhow!(
-                    "No configuration found for client {client_mac_address_str}. Skipping",
+                    "No configuration found or not all selected options matched for client {client_mac_address_str}. Skipping",
                 ))?;
 
                 let mut response = incoming_msg.clone();
