@@ -193,13 +193,22 @@ impl DhcpMsgWrapper {
 
         matches
     }
+
+    pub fn clean_unknown_options(&self) -> Self {
+        let mut msg = self.msg.clone();
+        msg.opts_mut().retain(|code, _| match code {
+            OptionCode::Unknown(_) => false,
+            _ => true,
+        });
+        Self { msg }
+    }
 }
 
 impl TryInto<serde_json::Value> for DhcpMsgWrapper {
     type Error = serde_json::Error;
 
     fn try_into(self) -> core::result::Result<serde_json::Value, Self::Error> {
-        serde_json::to_value(self.msg)
+        serde_json::to_value(self.clean_unknown_options().msg)
     }
 }
 
@@ -489,7 +498,6 @@ impl<'a> DhcpServer {
             _ => return Ok(()),
         };
 
-        
         let iface_name = &receiving_interface.name;
         let to_addr = "255.255.255.255:68";
         let mut buf = Vec::new();
@@ -499,7 +507,10 @@ impl<'a> DhcpServer {
         let reply_mac = DhcpMsgWrapper::client_mac_address_str_from_msg(&reply)
             .unwrap_or_else(|_| "Unknown".to_string());
         let reply_type = reply.opts().msg_type().unwrap_or(MessageType::Unknown(0));
-        debug!("Responding with {:?} on interface {iface_name} to client {reply_mac}.", reply_type);
+        debug!(
+            "Responding with {:?} on interface {iface_name} to client {reply_mac}.",
+            reply_type
+        );
         trace!("{:#?}", reply);
 
         let socket = &incoming_interface.server;
@@ -524,7 +535,7 @@ impl<'a> DhcpServer {
             for (_, (client_xid, session)) in sessions.iter().enumerate() {
                 if let Some(age) = now.duration_since(session.start_time).ok() {
                     if age > Duration::from_secs(30) {
-                        items_to_remove.push(*client_xid); 
+                        items_to_remove.push(*client_xid);
                         if session.client_ip.is_none() {
                             info!(
                                 "Session for client XID: {} timed out after {} seconds. Was expecting IP information from an authoritative DHCP server. Is there a DHCP service running on the network?",
@@ -538,7 +549,6 @@ impl<'a> DhcpServer {
                                 age.as_secs(),
                             );
                         }
-
                     }
                 }
             }
